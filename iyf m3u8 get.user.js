@@ -6,8 +6,8 @@
 // @author       Gemini & YourName
 // @match        *://*.iyf.tv/play/*
 // @match        *://*.iyf.tv/detail/*
-// @downloadURL  https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20获取助手%20v3.1%20(修正版)-3.1.user.js
-// @updateURL    https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20获取助手%20v3.1%20(修正版)-3.1.user.js
+// @downloadURL  https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20get.user.js
+// @updateURL    https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20get.user.js
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=iyf.tv
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
