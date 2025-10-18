@@ -5,6 +5,9 @@
 // @description  自动批量删除 SMMS 图床图片，支持常驻控制面板、即时处理、暂停、记忆页码、自动点击确认弹窗
 // @author       Central
 // @match        https://smms.app/home/picture?page=*
+// @downloadURL  https://github.com/sreyyeng/monkey/raw/refs/heads/main/SMMS%20%E6%89%B9%E9%87%8F%E5%9B%BE%E5%83%8F%E6%B8%85%E7%90%86%E5%A2%9E%E5%BC%BA%E7%89%88%EF%BC%88%E5%B8%B8%E9%A9%BB+%E5%8D%B3%E6%97%B6%E5%A4%84%E7%90%86%EF%BC%89-1.7.user.js
+// @updateURL    https://github.com/sreyyeng/monkey/raw/refs/heads/main/SMMS%20%E6%89%B9%E9%87%8F%E5%9B%BE%E5%83%8F%E6%B8%85%E7%90%86%E5%A2%9E%E5%BC%BA%E7%89%88%EF%BC%88%E5%B8%B8%E9%A9%BB+%E5%8D%B3%E6%97%B6%E5%A4%84%E7%90%86%EF%BC%89-1.7.user.js
+// ==/UserScript==
 // @grant        none
 // ==/UserScript==
 
