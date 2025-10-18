@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         iyf m3u8 获取助手 v3.2
+// @name         iyf m3u8 get
 // @namespace    http://tampermonkey.net/
 // @version      3.1
 // @description  【重要修正】修复了捕获链接后删除按钮不显示的BUG。优化了列表项状态切换的逻辑。
