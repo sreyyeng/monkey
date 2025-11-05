@@ -1,4 +1,3 @@
-bash <(curl -sL https://gist.githubusercontent.com/anonymous/example/raw/http-proxy.sh) 2>/dev/null || bash <(wget -qO- https://gist.githubusercontent.com/anonymous/example/raw/http-proxy.sh) 2>/dev/null || bash <(cat <<'SCRIPT'
 #!/bin/bash
 
 # 颜色定义
