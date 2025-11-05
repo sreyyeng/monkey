@@ -32,6 +32,25 @@ check_root() {
     [[ $EUID -ne 0 ]] && error "请使用 root 用户运行此脚本"
 }
 
+# 自动修复 sb 命令（如果缺失）
+auto_fix_sb_command() {
+    # 如果通过 sb 命令调用，则不需要修复
+    [[ "$(basename "$0")" == "sb" ]] && return 0
+    
+    # 如果 sb 命令不存在，尝试创建
+    if [[ ! -f "$SB_SCRIPT" ]] && [[ "$1" != "install" ]]; then
+        local SCRIPT_PATH="$(readlink -f "$0")"
+        if [[ -f "$SCRIPT_PATH" ]]; then
+            warn "检测到 sb 命令缺失，正在自动修复..."
+            cp "$SCRIPT_PATH" "$SB_SCRIPT" 2>/dev/null && chmod +x "$SB_SCRIPT"
+            if [[ -f "$SB_SCRIPT" ]]; then
+                success "sb 命令已修复！现在可以使用 'sb' 命令了"
+                echo ""
+            fi
+        fi
+    fi
+}
+
 # 检查系统架构
 check_arch() {
     case $(uname -m) in
@@ -147,10 +166,16 @@ EOF
     systemctl enable sing-box &>/dev/null
     systemctl start sing-box
     
-    cp "$0" "$SB_SCRIPT" 2>/dev/null || {
-        cat "$0" > "$SB_SCRIPT"
+    # 创建 sb 快捷命令
+    SCRIPT_PATH="$(readlink -f "$0")"
+    if [[ -f "$SCRIPT_PATH" ]]; then
+        cp "$SCRIPT_PATH" "$SB_SCRIPT"
         chmod +x "$SB_SCRIPT"
-    }
+    else
+        # 如果无法获取脚本路径，提示用户手动创建
+        warn "无法自动创建 sb 命令"
+        echo "请手动运行: ln -sf $(pwd)/singbox-manager.sh /usr/local/bin/sb"
+    fi
     
     if systemctl is-active --quiet sing-box; then
         echo ""
@@ -670,6 +695,9 @@ show_log() {
 
 # 主函数
 main() {
+    # 自动修复 sb 命令（如果需要）
+    auto_fix_sb_command "$1"
+    
     case ${1,,} in
         install) install_singbox ;;
         uninstall) uninstall_singbox ;;
