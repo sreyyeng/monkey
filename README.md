@@ -1,0 +1,1 @@
+wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-manager.sh -O /root/singbox-manager.sh && chmod +x /root/singbox-manager.sh && /root/singbox-manager.sh install && ln -sf /root/singbox-manager.sh /usr/local/bin/sb
