@@ -281,8 +281,11 @@ add_vless_reality() {
     read -p "SNI (默认 www.apple.com): " SNI
     [[ -z "$SNI" ]] && SNI="www.apple.com"
     
-    read -p "目标 (默认 www.apple.com:443): " DEST
-    [[ -z "$DEST" ]] && DEST="www.apple.com:443"
+    read -p "目标服务器 (默认 www.apple.com): " DEST_SERVER
+    [[ -z "$DEST_SERVER" ]] && DEST_SERVER="www.apple.com"
+
+    read -p "目标端口 (默认 443): " DEST_PORT
+    [[ -z "$DEST_PORT" ]] && DEST_PORT=443
     
     info "生成密钥..."
     KEYPAIR=$(generate_reality_keypair)
@@ -291,7 +294,6 @@ add_vless_reality() {
     SHORT_ID=$(generate_short_id)
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
-    
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
@@ -304,7 +306,10 @@ add_vless_reality() {
     "server_name": "${SNI}",
     "reality": {
       "enabled": true,
-      "handshake": {"server": "${DEST}", "server_port": 443},
+      "handshake": {
+        "server": "${DEST_SERVER}",
+        "server_port": ${DEST_PORT}
+      },
       "private_key": "${PRIVATE_KEY}",
       "short_id": ["${SHORT_ID}"]
     }
@@ -322,13 +327,17 @@ EOF
     
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
-    
     echo ""
     success "VLESS-REALITY 添加成功！"
     echo ""
     echo -e "${YELLOW}📱 完整链接：${NC}"
     echo ""
     echo -e "${CYAN}${VLESS_LINK}${NC}"
+    echo ""
+    echo -e "${YELLOW}配置详情：${NC}"
+    echo -e "  目标服务器: ${GREEN}${DEST_SERVER}${NC}"
+    echo -e "  目标端口: ${GREEN}${DEST_PORT}${NC}"
+    echo -e "  SNI: ${GREEN}${SNI}${NC}"
     echo ""
     read -p "按回车继续..." dummy
 }
