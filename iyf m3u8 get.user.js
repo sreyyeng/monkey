@@ -4,7 +4,7 @@
 // @version      3.3
 // @description  【彻底修复】面板立即显示无需刷新，滚动条左侧显示，固定列表高度
 // @author       Gemini & YourName
-// @match        *://*.iyf.tv/play/*
+// @match        *://*.iyf.tv/*
 // @match        *://*.iyf.tv/detail/*
 // @downloadURL  https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20get.user.js
 // @updateURL    https://github.com/sreyyeng/monkey/raw/refs/heads/main/iyf%20m3u8%20get.user.js
