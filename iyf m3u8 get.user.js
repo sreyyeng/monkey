@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         iyf m3u8 get
 // @namespace    http://tampermonkey.net/
-// @version      3.2
-// @description  【功能增强】1.滚动条显示在左侧，避免贴边bug 2.固定列表高度，避免过长 3.优化首次加载逻辑
+// @version      3.3
+// @description  【彻底修复】面板立即显示无需刷新，滚动条左侧显示，固定列表高度
 // @author       Gemini & YourName
 // @match        *://*.iyf.tv/play/*
 // @match        *://*.iyf.tv/detail/*
@@ -26,7 +26,7 @@
         trash: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>`
     };
 
-    // --- 2. 样式定义（滚动条在左侧，固定高度）---
+    // --- 2. 样式定义 ---
     GM_addStyle(`
         :root {
             --bg-primary: #1e1e2e; --bg-secondary: #27293d; --bg-tertiary: #363a59;
@@ -36,7 +36,7 @@
         }
         #iyf-helper-panel {
             position: fixed; top: 120px; right: 0; width: 320px; 
-            max-height: 700px; /* 整个面板最大高度 */
+            max-height: 700px;
             background-color: var(--bg-primary); color: var(--text-primary);
             border: 1px solid var(--border-color);
             border-top-left-radius: 12px; border-bottom-left-radius: 12px;
@@ -62,19 +62,14 @@
         #iyf-episode-list { 
             list-style: none; padding: 10px; margin: 0; 
             overflow-y: auto; overflow-x: hidden;
-            /* 固定高度范围，不会随集数增多而无限拉长 */
             max-height: 400px;
             min-height: 150px;
-            /* 使用RTL布局让滚动条显示在左侧 */
             direction: rtl;
-            scrollbar-width: thin; /* Firefox */
-            scrollbar-color: var(--accent-blue) var(--bg-secondary); /* Firefox */
+            scrollbar-width: thin;
+            scrollbar-color: var(--accent-blue) var(--bg-secondary);
         }
         
-        /* Webkit浏览器（Chrome, Edge, Safari）滚动条样式 - 增强版 */
-        #iyf-episode-list::-webkit-scrollbar { 
-            width: 12px; /* 加宽方便拖动 */
-        }
+        #iyf-episode-list::-webkit-scrollbar { width: 12px; }
         #iyf-episode-list::-webkit-scrollbar-track { 
             background: var(--bg-secondary);
             border-radius: 6px;
@@ -94,9 +89,8 @@
             background: var(--accent-mauve);
         }
 
-        /* 恢复列表项的正常文本方向 */
         .episode-item {
-            direction: ltr; /* 左到右，正常显示文字 */
+            direction: ltr;
             padding: 10px 12px; margin-bottom: 6px; border-radius: 6px;
             cursor: pointer; transition: all 0.2s ease-out;
             font-size: 14px; border-left: 4px solid var(--bg-tertiary);
@@ -134,50 +128,77 @@
             cursor: pointer; display: flex; align-items: center; justify-content: center;
             color: var(--text-primary); font-size: 20px;
         }
+        
+        /* 加载状态 */
+        .loading-hint {
+            direction: ltr;
+            padding: 20px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
     `);
 
-    // --- 3. 全局变量和状态 ---
+    // --- 3. 全局变量 ---
     let panel = null;
     let videoTitle = '', videoId = '', episodes = [], requestNonce = 0, pendingEpisodeId = null;
-    let isInitialized = false;
+    let isM3U8InterceptionSetup = false;
+    let contentLoadAttempts = 0;
+    const MAX_CONTENT_LOAD_ATTEMPTS = 50; // 最多尝试50次
 
-    // --- 4. 创建UI面板 ---
-    function createPanel() {
-        if (panel) return panel;
+    // --- 4. 立即创建并显示面板（空的也没关系）---
+    function createAndShowPanel() {
+        if (panel && document.body.contains(panel)) {
+            console.log('[iyf助手] 面板已存在');
+            return;
+        }
+        
+        // 等待body存在
+        if (!document.body) {
+            setTimeout(createAndShowPanel, 50);
+            return;
+        }
         
         panel = document.createElement('div');
         panel.id = 'iyf-helper-panel';
         panel.innerHTML = `
             <div id="iyf-toggle-button">${ICONS.toggleRight}</div>
-            <div id="iyf-helper-header">iyf M3U8 助手 v3.2</div>
-            <div id="iyf-helper-title">等待影片信息...</div>
-            <ul id="iyf-episode-list"></ul>
+            <div id="iyf-helper-header">iyf M3U8 助手 v3.3</div>
+            <div id="iyf-helper-title">正在加载影片信息...</div>
+            <ul id="iyf-episode-list">
+                <div class="loading-hint">⏳ 等待页面内容加载...</div>
+            </ul>
             <div id="iyf-command-area">
                 <textarea id="iyf-command-output" readonly placeholder="捕获到的下载命令将显示在此处..."></textarea>
                 <button id="iyf-copy-button">复制全部命令</button>
             </div>
         `;
         
-        // 绑定事件
+        // 绑定按钮事件
         panel.querySelector('#iyf-copy-button').addEventListener('click', () => {
             const textToCopy = document.getElementById('iyf-command-output').value;
-            if (textToCopy) { GM_setClipboard(textToCopy, 'text'); alert('所有命令已复制到剪贴板！'); }
-            else { alert('没有可复制的命令。'); }
+            if (textToCopy) { 
+                GM_setClipboard(textToCopy, 'text'); 
+                alert('所有命令已复制到剪贴板！'); 
+            } else { 
+                alert('没有可复制的命令。'); 
+            }
         });
         
         panel.querySelector('#iyf-toggle-button').addEventListener('click', () => {
             panel.classList.toggle('collapsed');
-            const button = document.getElementById('iyf-toggle-button');
+            const button = panel.querySelector('#iyf-toggle-button');
             button.innerHTML = panel.classList.contains('collapsed') ? ICONS.toggleLeft : ICONS.toggleRight;
         });
         
-        return panel;
+        document.body.appendChild(panel);
+        console.log('[iyf助手] ✅ 面板已创建并显示');
     }
 
-    // --- 5. M3U8 拦截逻辑 ---
+    // --- 5. M3U8 拦截 ---
     function setupM3U8Interception() {
-        if (isInitialized) return;
-        isInitialized = true;
+        if (isM3U8InterceptionSetup) return;
+        isM3U8InterceptionSetup = true;
         
         function handleM3U8Found(m3u8Url, capturedNonce, capturedEpisodeId) {
             if (capturedNonce !== requestNonce || !capturedEpisodeId) return;
@@ -215,7 +236,7 @@
         console.log('[iyf助手] M3U8拦截已启动');
     }
 
-    // --- 6. UI更新 ---
+    // --- 6. UI更新函数 ---
     function updateEpisodeUI(episode) {
         if (!episode || !episode.element) return;
         const el = episode.element;
@@ -247,15 +268,28 @@
         });
     }
 
-    // --- 7. 页面扫描和初始化 ---
-    function initialize() {
-        console.log('[iyf助手] 尝试初始化...');
+    // --- 7. 尝试加载内容 ---
+    function tryLoadContent() {
+        contentLoadAttempts++;
+        
+        if (contentLoadAttempts > MAX_CONTENT_LOAD_ATTEMPTS) {
+            console.log('[iyf助手] ⚠️ 达到最大尝试次数，停止加载');
+            const listEl = document.getElementById('iyf-episode-list');
+            if (listEl && listEl.querySelector('.loading-hint')) {
+                listEl.innerHTML = '<div class="loading-hint">❌ 未找到影片信息<br>请确认页面已正确加载</div>';
+            }
+            return;
+        }
+        
+        console.log(`[iyf助手] 尝试加载内容 (${contentLoadAttempts}/${MAX_CONTENT_LOAD_ATTEMPTS})...`);
         
         const pathParts = window.location.pathname.split('/');
         const newVideoId = pathParts[2];
+        
         if (!newVideoId) {
-            console.log('[iyf助手] 未找到视频ID');
-            return false;
+            console.log('[iyf助手] 未找到视频ID，继续等待...');
+            setTimeout(tryLoadContent, 200);
+            return;
         }
         
         const currentUrlId = new URLSearchParams(window.location.search).get('id');
@@ -271,46 +305,38 @@
         const episodeListContainer = document.querySelector('div.n-media-list');
         
         if (!titleElement || !episodeListContainer) {
-            console.log('[iyf助手] 页面元素未就绪');
-            return false;
+            console.log('[iyf助手] 页面元素未就绪，继续等待...');
+            setTimeout(tryLoadContent, 200);
+            return;
         }
         
         const episodeLinks = episodeListContainer.querySelectorAll('a.media-button');
         if (episodeLinks.length === 0) {
-            console.log('[iyf助手] 未找到剧集链接');
-            return false;
+            console.log('[iyf助手] 未找到剧集链接，继续等待...');
+            setTimeout(tryLoadContent, 200);
+            return;
         }
         
-        // 确保面板已添加到页面
-        if (!document.getElementById('iyf-helper-panel')) {
-            const panelElement = createPanel();
-            document.body.appendChild(panelElement);
-            console.log('[iyf助手] 面板已创建并添加到页面');
+        // 找到了！开始填充内容
+        videoTitle = titleElement.innerText.trim();
+        const titleEl = document.getElementById('iyf-helper-title');
+        if (titleEl) {
+            titleEl.innerText = `影片: ${videoTitle}`;
         }
         
-        if (episodes.length === 0 || episodes.length !== episodeLinks.length) {
-            videoTitle = titleElement.innerText.trim();
-            const titleEl = document.getElementById('iyf-helper-title');
-            if (titleEl) {
-                titleEl.innerText = `影片: ${videoTitle}`;
-            }
-            
-            episodes = Array.from(episodeLinks).map(link => ({
-                title: link.getAttribute('title')?.trim() || link.innerText.trim(), 
-                href: link.getAttribute('href'),
-                originalLink: link, 
-                m3u8: null, 
-                element: null
-            })).reverse();
-            
-            renderEpisodeList();
-            console.log(`[iyf助手] 初始化成功，找到 ${episodes.length} 集`);
-        }
+        episodes = Array.from(episodeLinks).map(link => ({
+            title: link.getAttribute('title')?.trim() || link.innerText.trim(), 
+            href: link.getAttribute('href'),
+            originalLink: link, 
+            m3u8: null, 
+            element: null
+        })).reverse();
         
+        renderEpisodeList();
         updateActiveEpisodeIndicator();
         updateCommandsDisplay();
         
-        return true;
+        console.log(`[iyf助手] ✅ 内容加载成功！找到 ${episodes.length} 集`);
     }
 
     function renderEpisodeList() {
@@ -349,7 +375,7 @@
                         const match = episode.href.match(/id=([^&]+)/);
                         pendingEpisodeId = match ? match[1] : null;
                     }
-                    console.log(`[iyf助手] 用户点击新剧集，生成新令牌: ${requestNonce}, 设置待捕获ID: ${pendingEpisodeId}`);
+                    console.log(`[iyf助手] 用户点击新剧集，令牌: ${requestNonce}, ID: ${pendingEpisodeId}`);
                     episode.originalLink.click();
                 }
             });
@@ -360,72 +386,44 @@
         });
     }
 
-    // --- 8. 智能启动逻辑（改进版）---
-    function smartInitialize() {
-        // 尝试初始化
-        const success = initialize();
-        
-        if (success) {
-            console.log('[iyf助手] 首次初始化成功');
-            return true;
-        }
-        
-        // 如果失败，继续监听
-        return false;
+    // --- 8. URL变化监听 ---
+    function setupURLChangeListener() {
+        let lastUrl = location.href;
+        new MutationObserver(() => {
+            const url = location.href;
+            if (url !== lastUrl) {
+                lastUrl = url;
+                pendingEpisodeId = new URLSearchParams(window.location.search).get('id');
+                console.log('[iyf助手] URL变化，重新加载内容');
+                
+                // 重置状态
+                contentLoadAttempts = 0;
+                const titleEl = document.getElementById('iyf-helper-title');
+                if (titleEl) titleEl.innerText = '正在加载影片信息...';
+                const listEl = document.getElementById('iyf-episode-list');
+                if (listEl) listEl.innerHTML = '<div class="loading-hint">⏳ 等待页面内容加载...</div>';
+                
+                setTimeout(tryLoadContent, 300);
+            }
+        }).observe(document, {subtree: true, childList: true});
     }
 
-    // --- 9. 启动脚本（多重保障）---
-    console.log('[iyf助手] 脚本加载中...');
+    // --- 9. 启动脚本 ---
+    console.log('[iyf助手] 🚀 脚本启动...');
     
-    // 设置M3U8拦截（越早越好）
+    // 第1步：立即设置M3U8拦截（越早越好）
     setupM3U8Interception();
     requestNonce++;
     
-    // 方案1: 立即尝试（适用于页面已部分加载的情况）
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('[iyf助手] DOMContentLoaded 触发');
-            setTimeout(smartInitialize, 100);
-        });
-    } else {
-        // 页面已经加载完成
-        setTimeout(smartInitialize, 100);
-    }
+    // 第2步：立即创建并显示空面板（不等内容）
+    createAndShowPanel();
     
-    // 方案2: 完全加载后再次尝试
-    window.addEventListener('load', () => {
-        console.log('[iyf助手] window.load 触发');
-        setTimeout(smartInitialize, 200);
-    });
+    // 第3步：开始尝试加载内容
+    setTimeout(tryLoadContent, 100);
     
-    // 方案3: MutationObserver持续监听（兜底方案）
-    const observer = new MutationObserver(() => {
-        if (!document.getElementById('iyf-helper-panel') || episodes.length === 0) {
-            smartInitialize();
-        }
-    });
+    // 第4步：设置URL变化监听
+    setupURLChangeListener();
     
-    // 等待body出现后再观察
-    function startObserver() {
-        if (document.body) {
-            observer.observe(document.body, { childList: true, subtree: true });
-            console.log('[iyf助手] MutationObserver 已启动');
-        } else {
-            setTimeout(startObserver, 50);
-        }
-    }
-    startObserver();
-    
-    // 方案4: URL变化监听
-    let lastUrl = location.href;
-    new MutationObserver(() => {
-        const url = location.href;
-        if (url !== lastUrl) {
-            lastUrl = url;
-            pendingEpisodeId = new URLSearchParams(window.location.search).get('id');
-            console.log('[iyf助手] URL变化，重新初始化');
-            setTimeout(() => { initialize(); }, 300);
-        }
-    }).observe(document, {subtree: true, childList: true});
+    console.log('[iyf助手] ✅ 启动完成，面板应该已经显示');
 
 })();
