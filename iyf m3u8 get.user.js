@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         iyf m3u8 get
 // @namespace    http://tampermonkey.net/
-// @version      3.1
-// @description  【重要修正】修复了捕获链接后删除按钮不显示的BUG。优化了列表项状态切换的逻辑。
+// @version      3.2
+// @description  【功能增强】1.增加更明显的可拖动滚动条 2.优化首次加载逻辑，无需刷新即可显示
 // @author       Gemini & YourName
 // @match        *://*.iyf.tv/play/*
 // @match        *://*.iyf.tv/detail/*
@@ -13,6 +13,7 @@
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
 // @license      MIT
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -25,7 +26,7 @@
         trash: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>`
     };
 
-    // --- 2. 样式定义 ---
+    // --- 2. 样式定义（增强滚动条样式）---
     GM_addStyle(`
         :root {
             --bg-primary: #1e1e2e; --bg-secondary: #27293d; --bg-tertiary: #363a59;
@@ -55,11 +56,37 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             border-bottom: 1px solid var(--border-color);
         }
-        #iyf-episode-list { list-style: none; padding: 10px; margin: 0; overflow-y: auto; flex-grow: 1; }
-        #iyf-episode-list::-webkit-scrollbar { width: 8px; }
-        #iyf-episode-list::-webkit-scrollbar-track { background: var(--bg-secondary); }
-        #iyf-episode-list::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
-        #iyf-episode-list::-webkit-scrollbar-thumb:hover { background: var(--border-color); }
+        #iyf-episode-list { 
+            list-style: none; padding: 10px; margin: 0; 
+            overflow-y: auto; overflow-x: hidden;
+            flex-grow: 1; 
+            /* 强制显示滚动条，即使内容不足也显示 */
+            scrollbar-width: thin; /* Firefox */
+            scrollbar-color: var(--accent-blue) var(--bg-secondary); /* Firefox */
+        }
+        
+        /* Webkit浏览器（Chrome, Edge, Safari）滚动条样式 - 增强版 */
+        #iyf-episode-list::-webkit-scrollbar { 
+            width: 12px; /* 加宽滚动条，更容易抓取 */
+        }
+        #iyf-episode-list::-webkit-scrollbar-track { 
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            margin: 4px 0; /* 上下留点边距 */
+        }
+        #iyf-episode-list::-webkit-scrollbar-thumb { 
+            background: var(--accent-blue); /* 使用更明显的蓝色 */
+            border-radius: 6px;
+            border: 2px solid var(--bg-secondary); /* 添加边框，让滚动条更立体 */
+            min-height: 40px; /* 最小高度，更容易抓取 */
+        }
+        #iyf-episode-list::-webkit-scrollbar-thumb:hover { 
+            background: #a6d1ff; /* 悬停时更亮 */
+            border-color: var(--bg-tertiary);
+        }
+        #iyf-episode-list::-webkit-scrollbar-thumb:active {
+            background: var(--accent-mauve); /* 拖动时变色 */
+        }
 
         .episode-item {
             padding: 10px 12px; margin-bottom: 6px; border-radius: 6px;
@@ -77,7 +104,6 @@
             padding: 5px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
             opacity: 0; visibility: hidden; transition: all 0.2s ease; transform: scale(0.8);
         }
-        /* 【修正】增加CSS选择器特异性，确保规则能正确应用 */
         #iyf-episode-list .episode-item.status-green .delete-button {
             opacity: 0.7; visibility: visible; transform: scale(1);
         }
@@ -102,58 +128,86 @@
         }
     `);
 
-    // --- 3. 创建UI面板 ---
-    const panel = document.createElement('div');
-    panel.id = 'iyf-helper-panel';
-    panel.innerHTML = `
-        <div id="iyf-toggle-button">${ICONS.toggleRight}</div>
-        <div id="iyf-helper-header">iyf M3U8 助手 v3.1</div>
-        <div id="iyf-helper-title">等待影片信息...</div>
-        <ul id="iyf-episode-list"></ul>
-        <div id="iyf-command-area">
-            <textarea id="iyf-command-output" readonly placeholder="捕获到的下载命令将显示在此处..."></textarea>
-            <button id="iyf-copy-button">复制全部命令</button>
-        </div>
-    `;
-    document.body.appendChild(panel);
-
-    // --- 4. 全局变量和状态 ---
+    // --- 3. 全局变量和状态 ---
+    let panel = null;
     let videoTitle = '', videoId = '', episodes = [], requestNonce = 0, pendingEpisodeId = null;
+    let isInitialized = false;
+
+    // --- 4. 创建UI面板 ---
+    function createPanel() {
+        if (panel) return panel;
+        
+        panel = document.createElement('div');
+        panel.id = 'iyf-helper-panel';
+        panel.innerHTML = `
+            <div id="iyf-toggle-button">${ICONS.toggleRight}</div>
+            <div id="iyf-helper-header">iyf M3U8 助手 v3.2</div>
+            <div id="iyf-helper-title">等待影片信息...</div>
+            <ul id="iyf-episode-list"></ul>
+            <div id="iyf-command-area">
+                <textarea id="iyf-command-output" readonly placeholder="捕获到的下载命令将显示在此处..."></textarea>
+                <button id="iyf-copy-button">复制全部命令</button>
+            </div>
+        `;
+        
+        // 绑定事件
+        panel.querySelector('#iyf-copy-button').addEventListener('click', () => {
+            const textToCopy = document.getElementById('iyf-command-output').value;
+            if (textToCopy) { GM_setClipboard(textToCopy, 'text'); alert('所有命令已复制到剪贴板！'); }
+            else { alert('没有可复制的命令。'); }
+        });
+        
+        panel.querySelector('#iyf-toggle-button').addEventListener('click', () => {
+            panel.classList.toggle('collapsed');
+            const button = document.getElementById('iyf-toggle-button');
+            button.innerHTML = panel.classList.contains('collapsed') ? ICONS.toggleLeft : ICONS.toggleRight;
+        });
+        
+        return panel;
+    }
 
     // --- 5. M3U8 拦截逻辑 ---
-    function handleM3U8Found(m3u8Url, capturedNonce, capturedEpisodeId) {
-        if (capturedNonce !== requestNonce || !capturedEpisodeId) return;
-        const episode = episodes.find(ep => ep.href && ep.href.includes(`id=${capturedEpisodeId}`));
-        if (episode && !episode.m3u8) {
-            console.log(`[iyf助手] 精准关联 M3U8 -> ${episode.title} (ID: ${capturedEpisodeId})`);
-            episode.m3u8 = m3u8Url;
-            pendingEpisodeId = null;
-            updateEpisodeUI(episode);
-            updateCommandsDisplay();
+    function setupM3U8Interception() {
+        if (isInitialized) return;
+        isInitialized = true;
+        
+        function handleM3U8Found(m3u8Url, capturedNonce, capturedEpisodeId) {
+            if (capturedNonce !== requestNonce || !capturedEpisodeId) return;
+            const episode = episodes.find(ep => ep.href && ep.href.includes(`id=${capturedEpisodeId}`));
+            if (episode && !episode.m3u8) {
+                console.log(`[iyf助手] 精准关联 M3U8 -> ${episode.title} (ID: ${capturedEpisodeId})`);
+                episode.m3u8 = m3u8Url;
+                pendingEpisodeId = null;
+                updateEpisodeUI(episode);
+                updateCommandsDisplay();
+            }
         }
+        
+        const originalFetch = unsafeWindow.fetch;
+        unsafeWindow.fetch = function(...args) {
+            const url = args[0] instanceof Request ? args[0].url : args[0];
+            if (typeof url === 'string' && url.includes('.m3u8')) {
+                const capturedNonce = requestNonce, capturedEpisodeId = pendingEpisodeId;
+                Promise.resolve().then(() => handleM3U8Found(url, capturedNonce, capturedEpisodeId));
+            }
+            return originalFetch.apply(this, args);
+        };
+        
+        const originalXhrOpen = unsafeWindow.XMLHttpRequest.prototype.open;
+        unsafeWindow.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+            if (typeof url === 'string' && url.includes('.m3u8')) {
+                const capturedNonce = requestNonce, capturedEpisodeId = pendingEpisodeId;
+                this.addEventListener('load', () => {
+                     Promise.resolve().then(() => handleM3U8Found(this.responseURL || url, capturedNonce, capturedEpisodeId));
+                });
+            }
+            return originalXhrOpen.apply(this, [method, url, ...rest]);
+        };
+        
+        console.log('[iyf助手] M3U8拦截已启动');
     }
-    const originalFetch = unsafeWindow.fetch;
-    unsafeWindow.fetch = function(...args) {
-        const url = args[0] instanceof Request ? args[0].url : args[0];
-        if (typeof url === 'string' && url.includes('.m3u8')) {
-            const capturedNonce = requestNonce, capturedEpisodeId = pendingEpisodeId;
-            Promise.resolve().then(() => handleM3U8Found(url, capturedNonce, capturedEpisodeId));
-        }
-        return originalFetch.apply(this, args);
-    };
-    const originalXhrOpen = unsafeWindow.XMLHttpRequest.prototype.open;
-    unsafeWindow.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (typeof url === 'string' && url.includes('.m3u8')) {
-            const capturedNonce = requestNonce, capturedEpisodeId = pendingEpisodeId;
-            this.addEventListener('load', () => {
-                 Promise.resolve().then(() => handleM3U8Found(this.responseURL || url, capturedNonce, capturedEpisodeId));
-            });
-        }
-        return originalXhrOpen.apply(this, [method, url, ...rest]);
-    };
 
     // --- 6. UI更新 ---
-    // 【核心修正】重写此函数，确保class的添加和移除是互斥和完整的
     function updateEpisodeUI(episode) {
         if (!episode || !episode.element) return;
         const el = episode.element;
@@ -170,7 +224,10 @@
 
     function updateCommandsDisplay() {
         const capturedCommands = episodes.filter(ep => ep.m3u8).map(ep => `"${ep.m3u8}" --saveName "${videoTitle}_${ep.title}" --enableDelAfterDone`);
-        document.getElementById('iyf-command-output').value = capturedCommands.join('\n');
+        const outputEl = document.getElementById('iyf-command-output');
+        if (outputEl) {
+            outputEl.value = capturedCommands.join('\n');
+        }
     }
 
     function updateActiveEpisodeIndicator() {
@@ -184,39 +241,79 @@
 
     // --- 7. 页面扫描和初始化 ---
     function initialize() {
+        console.log('[iyf助手] 尝试初始化...');
+        
         const pathParts = window.location.pathname.split('/');
         const newVideoId = pathParts[2];
-        if (!newVideoId) return;
+        if (!newVideoId) {
+            console.log('[iyf助手] 未找到视频ID');
+            return false;
+        }
+        
         const currentUrlId = new URLSearchParams(window.location.search).get('id');
         if (newVideoId !== videoId) {
-            videoId = newVideoId; episodes = []; videoTitle = ''; requestNonce++;
+            videoId = newVideoId; 
+            episodes = []; 
+            videoTitle = ''; 
+            requestNonce++;
             pendingEpisodeId = currentUrlId;
         }
+        
         const titleElement = document.querySelector('h4.d-inline.h4');
         const episodeListContainer = document.querySelector('div.n-media-list');
-        if (!titleElement || !episodeListContainer) return;
-        const newVideoTitle = titleElement.innerText.trim();
-        const episodeLinks = episodeListContainer.querySelectorAll('a.media-button');
-        if (episodeLinks.length === 0) return;
-        if (episodes.length === 0 || episodes.length !== episodeLinks.length) {
-            videoTitle = newVideoTitle;
-            document.getElementById('iyf-helper-title').innerText = `影片: ${videoTitle}`;
-            episodes = Array.from(episodeLinks).map(link => ({
-                title: link.getAttribute('title').trim() || link.innerText.trim(), href: link.getAttribute('href'),
-                originalLink: link, m3u8: null, element: null
-            })).reverse();
-            renderEpisodeList();
+        
+        if (!titleElement || !episodeListContainer) {
+            console.log('[iyf助手] 页面元素未就绪');
+            return false;
         }
+        
+        const episodeLinks = episodeListContainer.querySelectorAll('a.media-button');
+        if (episodeLinks.length === 0) {
+            console.log('[iyf助手] 未找到剧集链接');
+            return false;
+        }
+        
+        // 确保面板已添加到页面
+        if (!document.getElementById('iyf-helper-panel')) {
+            const panelElement = createPanel();
+            document.body.appendChild(panelElement);
+            console.log('[iyf助手] 面板已创建并添加到页面');
+        }
+        
+        if (episodes.length === 0 || episodes.length !== episodeLinks.length) {
+            videoTitle = titleElement.innerText.trim();
+            const titleEl = document.getElementById('iyf-helper-title');
+            if (titleEl) {
+                titleEl.innerText = `影片: ${videoTitle}`;
+            }
+            
+            episodes = Array.from(episodeLinks).map(link => ({
+                title: link.getAttribute('title')?.trim() || link.innerText.trim(), 
+                href: link.getAttribute('href'),
+                originalLink: link, 
+                m3u8: null, 
+                element: null
+            })).reverse();
+            
+            renderEpisodeList();
+            console.log(`[iyf助手] 初始化成功，找到 ${episodes.length} 集`);
+        }
+        
         updateActiveEpisodeIndicator();
         updateCommandsDisplay();
+        
+        return true;
     }
 
     function renderEpisodeList() {
         const listContainer = document.getElementById('iyf-episode-list');
+        if (!listContainer) return;
+        
         listContainer.innerHTML = '';
         episodes.forEach(episode => {
             const item = document.createElement('li');
-            item.className = 'episode-item'; // 初始只给基础class，具体状态由updateEpisodeUI决定
+            item.className = 'episode-item';
+            
             const deleteButton = document.createElement('button');
             deleteButton.className = 'delete-button';
             deleteButton.innerHTML = ICONS.trash;
@@ -228,10 +325,12 @@
                 updateEpisodeUI(episode);
                 updateCommandsDisplay();
             });
+            
             const titleSpan = document.createElement('span');
             titleSpan.innerText = `第 ${episode.title} 集`;
             item.appendChild(titleSpan);
             item.appendChild(deleteButton);
+            
             item.addEventListener('click', () => {
                 if (episode.originalLink && !item.classList.contains('active')) {
                     requestNonce++;
@@ -246,37 +345,79 @@
                     episode.originalLink.click();
                 }
             });
+            
             episode.element = item;
-            updateEpisodeUI(episode); // 根据当前状态（是否有m3u8）设置正确的初始样式
+            updateEpisodeUI(episode);
             listContainer.appendChild(item);
         });
     }
 
-    // --- 8. 事件监听 ---
-    document.getElementById('iyf-copy-button').addEventListener('click', () => {
-        const textToCopy = document.getElementById('iyf-command-output').value;
-        if (textToCopy) { GM_setClipboard(textToCopy, 'text'); alert('所有命令已复制到剪贴板！'); }
-        else { alert('没有可复制的命令。'); }
-    });
-    document.getElementById('iyf-toggle-button').addEventListener('click', () => {
-        const panel = document.getElementById('iyf-helper-panel');
-        const button = document.getElementById('iyf-toggle-button');
-        panel.classList.toggle('collapsed');
-        button.innerHTML = panel.classList.contains('collapsed') ? ICONS.toggleLeft : ICONS.toggleRight;
-    });
+    // --- 8. 智能启动逻辑（改进版）---
+    function smartInitialize() {
+        // 尝试初始化
+        const success = initialize();
+        
+        if (success) {
+            console.log('[iyf助手] 首次初始化成功');
+            return true;
+        }
+        
+        // 如果失败，继续监听
+        return false;
+    }
 
-    // --- 9. 启动脚本 ---
+    // --- 9. 启动脚本（多重保障）---
+    console.log('[iyf助手] 脚本加载中...');
+    
+    // 设置M3U8拦截（越早越好）
+    setupM3U8Interception();
     requestNonce++;
-    const observer = new MutationObserver(() => { initialize(); });
-    observer.observe(document.body, { childList: true, subtree: true });
+    
+    // 方案1: 立即尝试（适用于页面已部分加载的情况）
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('[iyf助手] DOMContentLoaded 触发');
+            setTimeout(smartInitialize, 100);
+        });
+    } else {
+        // 页面已经加载完成
+        setTimeout(smartInitialize, 100);
+    }
+    
+    // 方案2: 完全加载后再次尝试
+    window.addEventListener('load', () => {
+        console.log('[iyf助手] window.load 触发');
+        setTimeout(smartInitialize, 200);
+    });
+    
+    // 方案3: MutationObserver持续监听（兜底方案）
+    const observer = new MutationObserver(() => {
+        if (!document.getElementById('iyf-helper-panel') || episodes.length === 0) {
+            smartInitialize();
+        }
+    });
+    
+    // 等待body出现后再观察
+    function startObserver() {
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+            console.log('[iyf助手] MutationObserver 已启动');
+        } else {
+            setTimeout(startObserver, 50);
+        }
+    }
+    startObserver();
+    
+    // 方案4: URL变化监听
     let lastUrl = location.href;
     new MutationObserver(() => {
-      const url = location.href;
-      if (url !== lastUrl) {
-        lastUrl = url;
-        pendingEpisodeId = new URLSearchParams(window.location.search).get('id');
-        setTimeout(() => { initialize(); }, 300);
-      }
+        const url = location.href;
+        if (url !== lastUrl) {
+            lastUrl = url;
+            pendingEpisodeId = new URLSearchParams(window.location.search).get('id');
+            console.log('[iyf助手] URL变化，重新初始化');
+            setTimeout(() => { initialize(); }, 300);
+        }
     }).observe(document, {subtree: true, childList: true});
 
 })();
