@@ -2,7 +2,7 @@
 // @name         iyf m3u8 get
 // @namespace    http://tampermonkey.net/
 // @version      3.2
-// @description  【功能增强】1.增加更明显的可拖动滚动条 2.优化首次加载逻辑，无需刷新即可显示
+// @description  【功能增强】1.滚动条显示在左侧，避免贴边bug 2.固定列表高度，避免过长 3.优化首次加载逻辑
 // @author       Gemini & YourName
 // @match        *://*.iyf.tv/play/*
 // @match        *://*.iyf.tv/detail/*
@@ -26,7 +26,7 @@
         trash: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>`
     };
 
-    // --- 2. 样式定义（增强滚动条样式）---
+    // --- 2. 样式定义（滚动条在左侧，固定高度）---
     GM_addStyle(`
         :root {
             --bg-primary: #1e1e2e; --bg-secondary: #27293d; --bg-tertiary: #363a59;
@@ -35,7 +35,8 @@
             --border-color: #494d64;
         }
         #iyf-helper-panel {
-            position: fixed; top: 120px; right: 0; width: 320px; max-height: 75vh;
+            position: fixed; top: 120px; right: 0; width: 320px; 
+            max-height: 700px; /* 整个面板最大高度 */
             background-color: var(--bg-primary); color: var(--text-primary);
             border: 1px solid var(--border-color);
             border-top-left-radius: 12px; border-bottom-left-radius: 12px;
@@ -56,39 +57,46 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             border-bottom: 1px solid var(--border-color);
         }
+        
+        /* 集数列表 - 固定高度，滚动条在左侧 */
         #iyf-episode-list { 
             list-style: none; padding: 10px; margin: 0; 
             overflow-y: auto; overflow-x: hidden;
-            flex-grow: 1; 
-            /* 强制显示滚动条，即使内容不足也显示 */
+            /* 固定高度范围，不会随集数增多而无限拉长 */
+            max-height: 400px;
+            min-height: 150px;
+            /* 使用RTL布局让滚动条显示在左侧 */
+            direction: rtl;
             scrollbar-width: thin; /* Firefox */
             scrollbar-color: var(--accent-blue) var(--bg-secondary); /* Firefox */
         }
         
         /* Webkit浏览器（Chrome, Edge, Safari）滚动条样式 - 增强版 */
         #iyf-episode-list::-webkit-scrollbar { 
-            width: 12px; /* 加宽滚动条，更容易抓取 */
+            width: 12px; /* 加宽方便拖动 */
         }
         #iyf-episode-list::-webkit-scrollbar-track { 
             background: var(--bg-secondary);
             border-radius: 6px;
-            margin: 4px 0; /* 上下留点边距 */
+            margin: 4px 0;
         }
         #iyf-episode-list::-webkit-scrollbar-thumb { 
-            background: var(--accent-blue); /* 使用更明显的蓝色 */
+            background: var(--accent-blue);
             border-radius: 6px;
-            border: 2px solid var(--bg-secondary); /* 添加边框，让滚动条更立体 */
-            min-height: 40px; /* 最小高度，更容易抓取 */
+            border: 2px solid var(--bg-secondary);
+            min-height: 40px;
         }
         #iyf-episode-list::-webkit-scrollbar-thumb:hover { 
-            background: #a6d1ff; /* 悬停时更亮 */
+            background: #a6d1ff;
             border-color: var(--bg-tertiary);
         }
         #iyf-episode-list::-webkit-scrollbar-thumb:active {
-            background: var(--accent-mauve); /* 拖动时变色 */
+            background: var(--accent-mauve);
         }
 
+        /* 恢复列表项的正常文本方向 */
         .episode-item {
+            direction: ltr; /* 左到右，正常显示文字 */
             padding: 10px 12px; margin-bottom: 6px; border-radius: 6px;
             cursor: pointer; transition: all 0.2s ease-out;
             font-size: 14px; border-left: 4px solid var(--bg-tertiary);
@@ -111,7 +119,7 @@
 
         #iyf-command-area { padding: 10px; border-top: 1px solid var(--border-color); }
         #iyf-command-area textarea {
-            width: 100%; height: 120px; box-sizing: border-box; background-color: var(--bg-secondary); color: var(--text-primary);
+            width: 100%; height: 100px; box-sizing: border-box; background-color: var(--bg-secondary); color: var(--text-primary);
             border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; resize: vertical; padding: 8px;
         }
         #iyf-copy-button {
