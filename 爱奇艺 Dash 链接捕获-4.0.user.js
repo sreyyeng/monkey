@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         爱奇艺 Dash 助手 (字幕自动检测版)
+// @name         爱奇艺 Dash 助手
 // @namespace    http://tampermonkey.net/
-// @version      5.0
-// @description  捕获 Dash 链接，自动预加载并检测字幕(SRT)，支持一键复制和下载。
+// @version      6.0
+// @description  捕获 Dash 链接，自动预加载字幕，支持基于 tvname 的自动命名下载，支持一键复制所有 Dash。
 // @author       Gemini
 // @match        *://www.iqiyi.com/*
 // @grant        GM_download
@@ -17,7 +17,7 @@
     // 状态存储
     const state = {
         captured: new Set(), // 存储去重后的 Dash URL
-        items: []            // 存储详细信息对象 {id, dashUrl, hasSub, srtUrl, status}
+        items: []            // 存储详细信息 {id, dashUrl, hasSub, srtUrl, status, filename}
     };
 
     // --- CSS 样式 ---
@@ -36,6 +36,7 @@
             box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
             transition: all 0.3s ease;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            user-select: none;
         }
         #iqy-dash-trigger:hover {
             padding-right: 20px;
@@ -44,23 +45,22 @@
         #iqy-dash-panel {
             position: fixed;
             top: 150px;
-            left: 60px; /* 在触发器右侧 */
-            width: 450px;
+            left: 60px;
+            width: 420px;
             max-height: 500px;
-            background: rgba(20, 20, 20, 0.9);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(24, 24, 24, 0.95);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.15);
             border-radius: 12px;
             color: #eee;
             z-index: 99999;
-            display: none; /* 默认隐藏 */
+            display: none;
             flex-direction: column;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.6);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            overflow: hidden;
             opacity: 0;
             transform: translateX(-20px);
-            transition: opacity 0.3s, transform 0.3s;
+            transition: opacity 0.25s, transform 0.25s;
         }
         #iqy-dash-panel.show {
             display: flex;
@@ -68,117 +68,167 @@
             transform: translateX(0);
         }
         .panel-header {
-            padding: 15px;
-            background: rgba(255,255,255,0.05);
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.08);
             display: flex;
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid rgba(255,255,255,0.1);
         }
-        .panel-title { font-weight: bold; font-size: 15px; color: #00d084; }
-        .panel-close { cursor: pointer; padding: 4px; font-size: 18px; line-height: 1; }
+        .panel-title { font-weight: 600; font-size: 14px; color: #00e090; letter-spacing: 0.5px; }
+        .panel-close { cursor: pointer; padding: 4px; font-size: 18px; line-height: 1; opacity: 0.7; }
+        .panel-close:hover { opacity: 1; }
+
         .panel-content {
             flex: 1;
             overflow-y: auto;
             padding: 10px;
+            max-height: 380px;
         }
         .panel-content::-webkit-scrollbar { width: 6px; }
-        .panel-content::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
-        
-        /* 列表项样式 */
+        .panel-content::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+
+        /* 列表项 */
         .log-item {
-            background: rgba(255,255,255,0.03);
+            background: rgba(255,255,255,0.04);
             margin-bottom: 8px;
             padding: 10px;
             border-radius: 6px;
-            border-left: 3px solid #555;
-            transition: background 0.2s;
+            border-left: 3px solid #666;
+            position: relative;
         }
-        .log-item:hover { background: rgba(255,255,255,0.06); }
-        .log-item.has-sub { border-left-color: #00d084; } /* 有字幕显示绿色 */
-        .log-item.no-sub { border-left-color: #ff4d4f; }  /* 无字幕显示红色 */
-        
-        .item-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-        .item-status { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #333; color: #aaa; }
-        .item-status.success { background: rgba(0, 208, 132, 0.2); color: #00d084; }
-        
-        .item-url { 
-            font-size: 11px; color: #888; 
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
-            max-width: 300px; display: block; cursor: pointer;
-        }
-        .item-url:hover { color: #ddd; text-decoration: underline; }
+        .log-item.has-sub { border-left-color: #00e090; background: rgba(0, 224, 144, 0.05); }
+        .log-item.no-sub { border-left-color: #ff5555; }
 
-        .btn-group { margin-top: 8px; display: flex; gap: 8px; }
+        .item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .item-title { font-size: 12px; font-weight: bold; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px;}
+        .item-time { font-size: 10px; color: #888; }
+
+        .item-url-box {
+            background: rgba(0,0,0,0.3);
+            padding: 4px 6px;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            font-size: 11px;
+            color: #aaa;
+            word-break: break-all;
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            font-family: monospace;
+        }
+
+        .btn-group { display: flex; gap: 8px; justify-content: flex-end; }
         .action-btn {
-            padding: 4px 10px;
+            padding: 5px 12px;
             border: none;
             border-radius: 4px;
             font-size: 11px;
             cursor: pointer;
-            transition: opacity 0.2s;
+            transition: all 0.2s;
             color: white;
+            font-weight: 500;
         }
-        .action-btn:hover { opacity: 0.8; }
-        .btn-dash { background: #007bff; }
-        .btn-srt { background: #00d084; }
-        .btn-dl { background: #ff9800; color: black; }
+        .action-btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+        .action-btn:active { transform: translateY(0); }
+
+        .btn-dash { background: #3b82f6; }
+        .btn-dl { background: #f59e0b; color: #000; }
 
         .panel-footer {
-            padding: 10px;
+            padding: 12px;
+            background: rgba(0,0,0,0.2);
             border-top: 1px solid rgba(255,255,255,0.1);
-            text-align: right;
-            font-size: 12px;
-            color: #666;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
+        .btn-copy-all {
+            width: 100%;
+            background: #10b981;
+            color: white;
+            padding: 8px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        .btn-copy-all:hover { background: #059669; }
+
+        .status-tag { font-size: 10px; padding: 2px 5px; border-radius: 3px; margin-left: 5px; background:#444; }
+        .has-sub .status-tag { background: rgba(0, 224, 144, 0.2); color: #00e090; }
     `;
+
+    // --- 工具：获取当前页面视频标题 ---
+    function getCurrentVideoName() {
+        try {
+            // 1. 优先尝试从 URL 参数中提取 tvname
+            const params = new URLSearchParams(window.location.search);
+            const tvname = params.get('tvname');
+
+            if (tvname) {
+                // 解码 URI 组件
+                return decodeURIComponent(tvname).trim();
+            }
+
+            // 2. 如果 URL 没有，尝试 document.title，并清理后缀
+            let title = document.title;
+            title = title.replace('-电视剧-高清完整版在线观看-爱奇艺', '').replace('-动漫-高清完整版在线观看-爱奇艺', '').trim();
+            return title;
+
+        } catch (e) {
+            console.warn('获取视频名称失败', e);
+            return `视频_${Date.now()}`;
+        }
+    }
 
     // --- UI 构建 ---
     function initUI() {
-        // 注入样式
         const styleEl = document.createElement('style');
         styleEl.textContent = styles;
         document.head.appendChild(styleEl);
 
-        // 触发器（小球）
         const trigger = document.createElement('div');
         trigger.id = 'iqy-dash-trigger';
         trigger.innerHTML = 'Dash<br>0';
         trigger.onclick = () => togglePanel(true);
         document.body.appendChild(trigger);
 
-        // 主面板
         const panel = document.createElement('div');
         panel.id = 'iqy-dash-panel';
         panel.innerHTML = `
             <div class="panel-header">
-                <span class="panel-title">Dash & 字幕捕获助手</span>
+                <span class="panel-title">⚡️ iQIYI Dash 捕获助手</span>
                 <span class="panel-close">&times;</span>
             </div>
             <div class="panel-content" id="dash-list-content">
-                <div style="text-align:center; color:#555; padding: 20px;">等待捕获 Dash 链接...</div>
+                <div style="text-align:center; color:#666; padding: 30px 0; font-size:12px;">
+                    等待捕获...<br>切换集数会自动添加
+                </div>
             </div>
             <div class="panel-footer">
-                检测到请求自动加载，无字幕项将标记为红色
+                <button class="btn-copy-all" id="btn-copy-all-dash">一键复制所有 Dash 链接</button>
             </div>
         `;
         document.body.appendChild(panel);
 
-        // 关闭事件
         panel.querySelector('.panel-close').onclick = () => togglePanel(false);
-        
-        // 点击面板外不关闭，避免操作不便，只通过点击 X 或 触发器切换
+
+        // 绑定全部复制事件
+        document.getElementById('btn-copy-all-dash').onclick = copyAllDashLinks;
     }
 
     function togglePanel(show) {
         const panel = document.getElementById('iqy-dash-panel');
         if (show) {
-            panel.style.display = 'flex'; // 先 display flex
-            // 延时一小会儿加 show class 以触发 transition
+            panel.style.display = 'flex';
             setTimeout(() => panel.classList.add('show'), 10);
         } else {
             panel.classList.remove('show');
-            setTimeout(() => panel.style.display = 'none', 300); // 等动画结束
+            setTimeout(() => panel.style.display = 'none', 250);
         }
     }
 
@@ -204,57 +254,51 @@
         };
     }
 
-    // 2. 处理捕获的 URL
+    // 2. 处理捕获的 URL (关键修改：这里立即获取当前页面标题)
     function handleCapturedUrl(url) {
-        // 去重
         if (state.captured.has(url)) return;
         state.captured.add(url);
 
-        // 更新触发器计数
         const trigger = document.getElementById('iqy-dash-trigger');
         if(trigger) trigger.innerHTML = `Dash<br>${state.captured.size}`;
 
-        // 创建数据对象
+        // *** 关键点：捕获时锁定当前页面的名称 ***
+        // 这样即使后续页面跳转了，这个 Dash 链接对应的文件名依然是它产生时的那个
+        const currentName = getCurrentVideoName();
+
         const itemData = {
             id: Date.now() + Math.random(),
             dashUrl: url,
             hasSub: false,
             srtUrl: null,
-            status: 'checking' // checking, found, none, error
+            status: 'checking',
+            filename: currentName // 保存文件名
         };
         state.items.push(itemData);
 
-        // 立即渲染（显示正在检测）
         renderList();
-
-        // 3. 预加载并分析
         analyzeDashContent(itemData);
     }
 
-    // 3. 分析 Dash 响应内容
+    // 3. 预加载并分析 JSON
     function analyzeDashContent(item) {
         fetch(item.dashUrl)
             .then(res => res.json())
             .then(json => {
                 try {
-                    // 核心解析逻辑
                     const data = json.data;
                     const program = data.program;
-                    
-                    // 检查是否有字幕字段 (stl)
+
                     if (program && program.stl && program.stl.length > 0) {
-                        // 获取基础域名
-                        let dstl = data.dstl; 
-                        if (!dstl.endsWith('/')) dstl += ''; // 确保拼接正确，有时 dstl 自带反斜杠，有时没有，这里假设 API 返回的标准
-                        
-                        // 获取第一个字幕对象的 SRT 路径
-                        // 通常 stl 是个数组，可能有多种语言，这里默认取第一个或 main=1 的
-                        const subObj = program.stl[0]; 
+                        let dstl = data.dstl || '';
+                        if (!dstl.endsWith('/') && dstl) dstl += '';
+
+                        const subObj = program.stl[0];
                         const srtPath = subObj.srt;
-                        
+
                         if (srtPath) {
                             item.hasSub = true;
-                            item.srtUrl = dstl + srtPath; // 拼接完整链接
+                            item.srtUrl = dstl + srtPath;
                             item.status = 'found';
                         } else {
                             item.status = 'none';
@@ -263,121 +307,144 @@
                         item.status = 'none';
                     }
                 } catch (e) {
-                    console.error('解析出错', e);
+                    console.error('JSON解析出错', e);
                     item.status = 'error';
                 }
-                // 更新 UI
-                updateItemUI(item);
+                updateItemUI();
             })
             .catch(err => {
-                console.error('Fetch出错', err);
+                console.error('预加载失败', err);
                 item.status = 'error';
-                updateItemUI(item);
+                updateItemUI();
             });
     }
 
-    // 4. 渲染列表 (全量重新渲染太重，这里做简化，实际建议用 Virtual DOM 或增量更新)
-    // 为了简单，这里清空重绘，因为 Dash 链接通常不会太多 (3-5个)
+    // 4. 渲染列表
     function renderList() {
         const container = document.getElementById('dash-list-content');
         if (!container) return;
         container.innerHTML = '';
 
-        // 倒序显示，新的在上面
+        // 倒序：最新的在上面
         [...state.items].reverse().forEach(item => {
             const el = document.createElement('div');
-            let statusClass = '';
-            let statusText = '检测中...';
+            let statusText = '';
+            let extraClass = '';
 
-            if (item.status === 'found') {
-                statusClass = 'has-sub';
-                statusText = '✅ 包含字幕';
-            } else if (item.status === 'none') {
-                statusClass = 'no-sub';
-                statusText = '无字幕';
-            } else if (item.status === 'error') {
-                statusClass = 'no-sub';
-                statusText = '解析失败';
-            } else {
-                statusClass = ''; // checking
-            }
+            if (item.status === 'checking') statusText = '检测中...';
+            else if (item.status === 'found') { statusText = '包含字幕'; extraClass = 'has-sub'; }
+            else if (item.status === 'none') { statusText = '无字幕'; extraClass = 'no-sub'; }
+            else statusText = '错误';
 
-            el.className = `log-item ${statusClass}`;
-            el.innerHTML = `
-                <div class="item-row">
-                    <span class="item-status ${item.status === 'found' ? 'success' : ''}">${statusText}</span>
-                    <span style="font-size:10px; color:#666;">${new Date(item.id).toLocaleTimeString()}</span>
+            el.className = `log-item ${extraClass}`;
+
+            // 构建 HTML
+            let html = `
+                <div class="item-header">
+                    <div class="item-title" title="${item.filename}">${item.filename}</div>
+                    <div style="display:flex;align-items:center">
+                        <span class="item-time">${new Date(item.id).toLocaleTimeString()}</span>
+                        ${item.status === 'found' ? `<span class="status-tag">SRT</span>` : ''}
+                    </div>
                 </div>
-                <div class="item-url" title="${item.dashUrl}">Dash: ${item.dashUrl}</div>
-                ${item.status === 'found' ? `
-                    <div class="item-url" style="color:#00d084; margin-top:4px;" title="${item.srtUrl}">SRT: ${item.srtUrl}</div>
-                ` : ''}
+                <div class="item-url-box" title="${item.dashUrl}">Dash: ${item.dashUrl}</div>
                 <div class="btn-group">
                     <button class="action-btn btn-dash" data-url="${item.dashUrl}">复制 Dash</button>
-                    ${item.status === 'found' ? `
-                        <button class="action-btn btn-srt" data-srt="${item.srtUrl}">复制 SRT链接</button>
-                        <button class="action-btn btn-dl" data-dl="${item.srtUrl}">下载 SRT</button>
-                    ` : ''}
-                </div>
             `;
-            
-            // 绑定事件委托太麻烦，直接闭包绑定
+
+            // 只有有字幕时才显示下载按钮 (不显示复制链接)
+            if (item.status === 'found') {
+                html += `<button class="action-btn btn-dl" data-dl="${item.srtUrl}" data-name="${item.filename}">下载 SRT</button>`;
+            }
+
+            html += `</div>`;
+            el.innerHTML = html;
+
+            // 绑定事件
             const btnDash = el.querySelector('.btn-dash');
             btnDash.onclick = () => copyText(item.dashUrl);
 
-            const btnSrt = el.querySelector('.btn-srt');
-            if (btnSrt) btnSrt.onclick = () => copyText(item.srtUrl);
-
             const btnDl = el.querySelector('.btn-dl');
-            if (btnDl) btnDl.onclick = () => downloadFile(item.srtUrl);
+            if (btnDl) {
+                btnDl.onclick = () => downloadFile(item.srtUrl, item.filename);
+            }
 
             container.appendChild(el);
         });
     }
 
-    // 局部更新 UI (当异步请求回来时调用)
-    function updateItemUI(item) {
-        // 简单粗暴：直接重新渲染列表，保证顺序和状态正确
+    function updateItemUI() {
         renderList();
     }
 
-    // --- 工具函数 ---
-    function copyText(text) {
+    // --- 批量操作逻辑 ---
+    function copyAllDashLinks() {
+        if (state.items.length === 0) {
+            showToast("列表为空");
+            return;
+        }
+        // 提取所有 Dash 链接，用换行符连接
+        const allLinks = state.items.map(item => item.dashUrl).join('\n');
+        copyText(allLinks, `已复制 ${state.items.length} 个 Dash 链接`);
+    }
+
+    // --- 通用工具 ---
+    function copyText(text, successMsg = "复制成功！") {
         if (typeof GM_setClipboard === 'function') {
             GM_setClipboard(text);
-            showToast("复制成功！");
+            showToast(successMsg);
         } else {
-            navigator.clipboard.writeText(text).then(() => showToast("复制成功！"));
+            navigator.clipboard.writeText(text).then(() => showToast(successMsg));
         }
     }
 
-    function downloadFile(url) {
+    function downloadFile(url, filenamePrefix) {
+        // 处理文件名，去除非法字符
+        const safeName = (filenamePrefix || 'subtitle').replace(/[\\/:*?"<>|]/g, '_');
+        const finalName = `${safeName}.srt`;
+
         if (typeof GM_download === 'function') {
             GM_download({
                 url: url,
-                name: 'subtitle.srt',
+                name: finalName,
                 saveAs: true
             });
         } else {
-            // 降级方案
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'subtitle.srt';
-            a.target = '_blank';
+            a.download = finalName;
+            a.target = '_blank'; // 兼容部分浏览器行为
+            document.body.appendChild(a);
             a.click();
+            document.body.removeChild(a);
         }
     }
 
     function showToast(msg) {
-        // 简单的提示框
         const div = document.createElement('div');
-        div.style.cssText = `position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:rgba(0,0,0,0.8); color:white; padding:10px 20px; border-radius:5px; z-index:100000; font-size:14px; pointer-events:none;`;
+        div.style.cssText = `
+            position:fixed; top:50%; left:50%; transform:translate(-50%, -50%);
+            background:rgba(0,0,0,0.85); color:white; padding:12px 24px;
+            border-radius:8px; z-index:100000; font-size:14px; pointer-events:none;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3); backdrop-filter: blur(4px);
+            animation: fadeIn 0.2s ease-out;
+        `;
         div.innerText = msg;
         document.body.appendChild(div);
-        setTimeout(() => div.remove(), 1500);
+
+        // 添加简单的淡入动画样式
+        const animStyle = document.createElement('style');
+        animStyle.innerHTML = `@keyframes fadeIn { from { opacity:0; transform:translate(-50%, -40%); } to { opacity:1; transform:translate(-50%, -50%); } }`;
+        document.head.appendChild(animStyle);
+
+        setTimeout(() => {
+            div.style.opacity = '0';
+            div.style.transition = 'opacity 0.3s';
+            setTimeout(() => { div.remove(); animStyle.remove(); }, 300);
+        }, 1500);
     }
 
-    // --- 初始化 ---
+    // --- 初始化入口 ---
     window.addEventListener('load', () => {
         initUI();
         monitorNetwork();
