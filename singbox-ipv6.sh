@@ -1,9 +1,10 @@
 #!/bin/bash
 
-# sing-box IPv6 专用管理脚本 v2.1 (IPv6 Optimized)
-# 支持: VLESS-REALITY + HTTP + SOCKS5
-# 特性: 自动识别 IPv6 格式，监听 :: 接口
-# 作者: 优化版本
+# sing-box IPv6 专用管理脚本 v2.2 (镜像加速版)
+# 特性: 
+# 1. 监听 [::] 支持 IPv6
+# 2. 使用 Cloudflare 镜像强制下载，解决 GitHub 无法连接问题
+# 3. 自动版本 fallback 机制
 
 # 颜色定义
 RED='\033[0;31m'
@@ -73,12 +74,10 @@ install_dependencies() {
 
 # 获取IP地址 (IPv6 优化版)
 get_server_ip() {
-    # 优先尝试获取 IPv6，失败则回退 IPv4
     local ip=$(curl -s -6 ip.sb 2>/dev/null || curl -s -4 ip.sb 2>/dev/null)
     [[ -z "$ip" ]] && ip=$(curl -s ifconfig.me 2>/dev/null)
     [[ -z "$ip" ]] && ip="YOUR_SERVER_IP"
     
-    # 如果包含冒号（即 IPv6），则添加方括号供 URL 使用
     if [[ "$ip" == *":"* ]]; then
         echo "[$ip]"
     else
@@ -86,10 +85,11 @@ get_server_ip() {
     fi
 }
 
+# 安装sing-box (核心修改部分)
 install_singbox() {
     clear
     echo -e "${GREEN}=========================================="
-    echo -e "   sing-box 安装程序 (IPv6 增强版)"
+    echo -e "   sing-box 安装程序 (IPv6 镜像版)"
     echo -e "==========================================${NC}"
     echo ""
     
@@ -106,10 +106,9 @@ install_singbox() {
     
     info "获取最新版本信息..."
     
-    # 1. 尝试获取版本
+    # 尝试获取版本，如果 API 不通则使用默认版本
     LATEST_VERSION=$(curl -s -6 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
     
-    # 2. 如果获取失败，使用默认兜底版本
     if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
         LATEST_VERSION="1.11.4"
         warn "API 连接失败，使用默认版本: v${LATEST_VERSION}"
@@ -117,32 +116,23 @@ install_singbox() {
         info "最新版本: v${LATEST_VERSION}"
     fi
     
-    # 定义下载链接
+    # === 关键修改：强制使用镜像下载 ===
     FILENAME="sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
-    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/${FILENAME}"
-    # 定义镜像链接 (使用 ghp.ci 加速)
-    MIRROR_URL="https://ghp.ci/${DOWNLOAD_URL}"
+    # GitHub 原始链接 (纯IPv6通常无法连接)
+    ORIGIN_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/${FILENAME}"
+    # 镜像链接 (走 Cloudflare CDN，支持 IPv6)
+    MIRROR_URL="https://ghp.ci/${ORIGIN_URL}"
     
-    info "准备下载 sing-box..."
+    info "正在下载 (使用高速镜像)..."
     TEMP_DIR=$(mktemp -d)
     
-    # 3. 尝试直接下载
-    info "尝试从 GitHub 官方下载..."
-    wget -q --show-progress -t 2 -T 10 "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"
-    
-    # 4. 如果下载失败，尝试镜像下载
-    if [[ $? -ne 0 ]]; then
-        warn "官方源下载失败，正在切换至高速镜像源..."
-        info "尝试从镜像站点下载..."
-        wget -q --show-progress "$MIRROR_URL" -O "${TEMP_DIR}/sing-box.tar.gz"
-        
-        if [[ $? -ne 0 ]]; then
-            rm -rf "$TEMP_DIR"
-            error "下载彻底失败，请检查网络或 DNS 设置"
-        fi
+    # 直接使用镜像下载，不再尝试官方源
+    if ! wget -q --show-progress "$MIRROR_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
+        echo ""
+        error "镜像下载失败！请检查 VPS 的 DNS 设置 (建议使用 Google DNS64)"
     fi
     
-    info "下载成功，开始安装..."
+    info "安装 sing-box..."
     tar -xzf "${TEMP_DIR}/sing-box.tar.gz" -C "$TEMP_DIR"
     BINARY_FILE=$(find "$TEMP_DIR" -name "sing-box" -type f)
     
@@ -157,6 +147,7 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
     
+    # 基础配置
     cat > "$SING_BOX_CONFIG" << 'EOF'
 {
   "log": {
@@ -312,7 +303,7 @@ add_vless_reality() {
     SHORT_ID=$(generate_short_id)
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
-    # 注意: listen 改为 ::
+    
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
@@ -345,7 +336,6 @@ EOF
     restart_singbox
     
     SERVER_IP=$(get_server_ip)
-    # SERVER_IP 已经包含了 [] 如果它是 IPv6
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     
     echo ""
@@ -380,7 +370,6 @@ add_http_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/http-${PORT}.json"
     
-    # 注意: listen 改为 ::
     cat > "$CONF_FILE" << EOF
 {
   "type": "http",
@@ -421,7 +410,6 @@ add_socks5_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/socks-${PORT}.json"
     
-    # 注意: listen 改为 ::
     if [[ "$AUTH" == "y" ]]; then
         read -p "用户名 (默认socksuser): " USER
         [[ -z "$USER" ]] && USER="socksuser"
@@ -562,7 +550,6 @@ show_config_info() {
         fi
         
         if [[ -n "$public_key" && "$flow" == "xtls-rprx-vision" ]]; then
-            # Link generation adapted for potential IPv6 brackets
             local vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-${port}"
             
             echo -e "${YELLOW}📱 VLESS-REALITY 链接：${NC}"
@@ -679,7 +666,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-${GREEN}      sing-box 管理脚本 (IPv6版)${NC}
+${GREEN}      sing-box 管理脚本 (IPv6 镜像版)${NC}
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
 
 ${YELLOW}📦 安装与卸载:${NC}
@@ -700,9 +687,9 @@ ${YELLOW}🔧 服务管理:${NC}
   ${GREEN}sb log${NC}               查看日志
 
 ${YELLOW}🌐 IPv6 特别说明:${NC}
-  • 已自动配置监听 [::]
-  • 链接已自动添加 [] 包裹 IP
-  • 请确保客户端网络支持 IPv6
+  • 自动监听 [::] 支持 IPv6
+  • 使用 ghp.ci 镜像加速下载
+  • 分享链接自动添加 [] 包裹 IP
 
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
 EOF
