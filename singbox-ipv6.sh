@@ -106,13 +106,17 @@ install_singbox() {
     install_dependencies
     
     info "获取最新版本信息..."
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
     
-    if [[ -z "$LATEST_VERSION" ]]; then
-        error "无法获取最新版本信息"
+    # 尝试使用 -6 强制 IPv6 连接，如果失败则使用 fallback 版本
+    LATEST_VERSION=$(curl -s -6 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
+    
+    # 如果自动获取失败（变量为空），则使用默认版本
+    if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
+        warn "无法自动获取最新版本，将使用默认版本 v1.11.4"
+        LATEST_VERSION="1.11.4"
     fi
     
-    info "最新版本: v${LATEST_VERSION}"
+    info "即将安装版本: v${LATEST_VERSION}"
     
     DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
     
