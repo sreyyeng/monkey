@@ -86,11 +86,10 @@ get_server_ip() {
     fi
 }
 
-# 安装sing-box
 install_singbox() {
     clear
     echo -e "${GREEN}=========================================="
-    echo -e "   sing-box 安装程序 (IPv6 优化版)"
+    echo -e "   sing-box 安装程序 (IPv6 增强版)"
     echo -e "==========================================${NC}"
     echo ""
     
@@ -107,27 +106,43 @@ install_singbox() {
     
     info "获取最新版本信息..."
     
-    # 尝试使用 -6 强制 IPv6 连接，如果失败则使用 fallback 版本
+    # 1. 尝试获取版本
     LATEST_VERSION=$(curl -s -6 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
     
-    # 如果自动获取失败（变量为空），则使用默认版本
+    # 2. 如果获取失败，使用默认兜底版本
     if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
-        warn "无法自动获取最新版本，将使用默认版本 v1.11.4"
         LATEST_VERSION="1.11.4"
+        warn "API 连接失败，使用默认版本: v${LATEST_VERSION}"
+    else
+        info "最新版本: v${LATEST_VERSION}"
     fi
     
-    info "即将安装版本: v${LATEST_VERSION}"
+    # 定义下载链接
+    FILENAME="sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/${FILENAME}"
+    # 定义镜像链接 (使用 ghp.ci 加速)
+    MIRROR_URL="https://ghp.ci/${DOWNLOAD_URL}"
     
-    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
-    
-    info "下载 sing-box..."
+    info "准备下载 sing-box..."
     TEMP_DIR=$(mktemp -d)
     
-    if ! wget -q --show-progress "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
-        error "下载失败"
+    # 3. 尝试直接下载
+    info "尝试从 GitHub 官方下载..."
+    wget -q --show-progress -t 2 -T 10 "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"
+    
+    # 4. 如果下载失败，尝试镜像下载
+    if [[ $? -ne 0 ]]; then
+        warn "官方源下载失败，正在切换至高速镜像源..."
+        info "尝试从镜像站点下载..."
+        wget -q --show-progress "$MIRROR_URL" -O "${TEMP_DIR}/sing-box.tar.gz"
+        
+        if [[ $? -ne 0 ]]; then
+            rm -rf "$TEMP_DIR"
+            error "下载彻底失败，请检查网络或 DNS 设置"
+        fi
     fi
     
-    info "安装 sing-box..."
+    info "下载成功，开始安装..."
     tar -xzf "${TEMP_DIR}/sing-box.tar.gz" -C "$TEMP_DIR"
     BINARY_FILE=$(find "$TEMP_DIR" -name "sing-box" -type f)
     
@@ -142,7 +157,6 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
     
-    # 基础配置：注意这里的 inbounds 和 outbounds 都是空的，由 add 命令填充
     cat > "$SING_BOX_CONFIG" << 'EOF'
 {
   "log": {
