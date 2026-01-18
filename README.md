@@ -4,4 +4,5 @@ wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-m
 #单IPV6
 wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-ipv6.sh -O /root/sb6.sh && chmod +x /root/sb6.sh && /root/sb6.sh install && ln -sf /root/sb6.sh /usr/local/bin/sb
 
-
+#分流
+wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-ip46.sh -O /root/singbox-ip46.sh && chmod +x /root/singbox-ip46.sh && /root/singbox-ip46.sh install
