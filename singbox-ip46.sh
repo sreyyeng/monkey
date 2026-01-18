@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.1 (IPv4/IPv6 分流版)
-# 支持: VLESS-REALITY + HTTP + SOCKS5
+# sing-box 独立管理脚本 v2.2 (IPv4/v6 分流修复版)
+# 适配: Sing-box 1.9+ (使用 Rule Set 新格式)
 # 功能: 自动根据规则分流 IPv4/IPv6
 
 # 颜色定义
@@ -67,11 +67,11 @@ install_dependencies() {
     fi
 }
 
-# 安装sing-box (核心修改部分)
+# 安装sing-box (核心修改部分: 适配新版 Rule Set)
 install_singbox() {
     clear
     echo -e "${GREEN}=========================================="
-    echo -e "   sing-box 安装程序 (IPv4/v6 分流版)"
+    echo -e "   sing-box 安装程序 (v2.2 修复版)"
     echo -e "==========================================${NC}"
     echo ""
     
@@ -110,13 +110,10 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
 
-    # === [新增] 下载 GeoIP 和 Geosite 数据库 ===
-    info "下载路由规则文件 (geoip/geosite)..."
-    wget -q --show-progress "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db" -O /etc/sing-box/geoip.db
-    wget -q --show-progress "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db" -O /etc/sing-box/geosite.db
+    # 注意：新版不再手动下载 .db 文件，改为在 config.json 中定义 remote rule-set
     
-    # === [修改] 配置文件：添加分流逻辑 ===
-    info "生成分流配置文件..."
+    # === [修改] 配置文件：使用 rule_set 格式 ===
+    info "生成分流配置文件 (Rule Set 模式)..."
     cat > "$SING_BOX_CONFIG" << 'EOF'
 {
   "log": {
@@ -143,16 +140,60 @@ install_singbox() {
   "route": {
     "rules": [
       {
-        "geosite": ["google", "youtube", "netflix", "telegram"],
+        "rule_set": ["geosite-google", "geosite-youtube", "geosite-netflix", "geosite-telegram"],
         "outbound": "direct-ipv6"
       },
       {
-        "geosite": "cn",
+        "rule_set": ["geosite-cn", "geoip-cn"],
         "outbound": "direct-ipv4"
       },
       {
         "ip_is_private": true,
         "outbound": "direct"
+      }
+    ],
+    "rule_set": [
+      {
+        "tag": "geosite-google",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
+        "download_detour": "direct-ipv4"
+      },
+      {
+        "tag": "geosite-youtube",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
+        "download_detour": "direct-ipv4"
+      },
+      {
+        "tag": "geosite-netflix",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
+        "download_detour": "direct-ipv4"
+      },
+      {
+        "tag": "geosite-telegram",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
+        "download_detour": "direct-ipv4"
+      },
+      {
+        "tag": "geosite-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        "download_detour": "direct-ipv4"
+      },
+      {
+        "tag": "geoip-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+        "download_detour": "direct-ipv4"
       }
     ]
   }
@@ -190,10 +231,10 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(已配置 IPv4/v6 智能分流)"
+        success "sing-box 安装成功！(已配置 IPv4/v6 智能分流 - 新版 RuleSet)"
         echo ""
     else
-        error "sing-box 服务启动失败"
+        error "sing-box 服务启动失败，请使用 sb log 查看日志"
     fi
 }
 
@@ -253,7 +294,7 @@ add_inbound_to_config() {
 restart_singbox() {
     info "测试配置文件..."
     if ! "$SING_BOX_BIN" check -c "$SING_BOX_CONFIG" &>/dev/null; then
-        error "配置文件语法错误"
+        error "配置文件语法错误，请检查"
     fi
     
     info "重启 sing-box 服务..."
@@ -663,11 +704,11 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-${GREEN}      sing-box 管理脚本 v2.1${NC}
+${GREEN}      sing-box 管理脚本 v2.2${NC}
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
 
 ${YELLOW}📦 安装与卸载:${NC}
-  ${GREEN}sb install${NC}          安装 sing-box (含IPv4/v6分流)
+  ${GREEN}sb install${NC}          安装 sing-box (修复规则集)
   ${GREEN}sb uninstall${NC}        卸载 sing-box
 
 ${YELLOW}📋 配置管理:${NC}
@@ -683,10 +724,10 @@ ${YELLOW}🔧 服务管理:${NC}
   ${GREEN}sb status${NC}           查看状态
   ${GREEN}sb log${NC}              查看日志
 
-${YELLOW}💡 分流策略 (内置):${NC}
-  • Google/Youtube/Netflix -> 优先走 IPv6
-  • CN (国内域名)          -> 优先走 IPv4
-  • 其他默认               -> 跟随系统默认
+${YELLOW}💡 分流策略 (基于 Remote RuleSet):${NC}
+  • Google/Youtube/Netflix/TG -> IPv6 (直连)
+  • CN (国内域名/IP)          -> IPv4 (直连)
+  • 其他默认                  -> 默认路由
 
 ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
 EOF
