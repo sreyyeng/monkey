@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.8 (完整无删减终极版)
+# sing-box 独立管理脚本 v2.9 (1.12+ 终极完整修复版)
 # 适配: Sing-box 1.12+ 最新语法规范
 # 核心修正:
-# 1. [FATAL修复] 移除 1.12 已废弃的 auto_detect_interface
-# 2. [WARN修复] 升级 DNS 为 DoH (HTTPS) 格式并绑定出站 detour
-# 3. [FATAL修复] 流量嗅探 sniff 改为纯布尔值 true
-# 特性: 纯净无色 / IPv6 自动探测 / 动态路由管理 / 完整增删改查交互菜单
+# 1. [WARN修复] 彻底解决 missing domain_resolver 导致的 IPv6 分流失效。
+# 2. [WARN修复] 消除 legacy domain strategy 警告，重构 DNS 解析树。
+# 3. [FATAL修复] 流量嗅探 sniff 改为纯布尔值 true，移除废弃字段。
+# 特性: 100% 完整交互菜单 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -74,29 +74,42 @@ install_dependencies() {
     fi
 }
 
-# === 核心修正区：适配 1.12+ 的 DNS(DoH) 和 Outbound ===
+# === v2.9 核心修正区：彻底重构 1.12+ 的 DNS 解析树与出站绑定 ===
 generate_base_config() {
     local enable_ipv6=$1
     
-    # 升级为 DoH (DNS over HTTPS)，并明确绑定 detour，消除 WARN
-    local dns_json='{
-        "servers": [
-            {"tag": "cf", "address": "https://1.1.1.1/dns-query", "detour": "direct"}, 
-            {"tag": "cf-v6", "address": "https://[2606:4700:4700::1111]/dns-query", "detour": "direct"}
-        ], 
-        "final": "cf", 
-        "strategy": "prefer_ipv4"
-    }'
-
     if [[ "$enable_ipv6" == "true" ]]; then
-        # 移除了 auto_detect_interface，消除 FATAL
+        # 启用 IPv6：配置独立的 V4/V6 解析器，并绑定到对应的出站，彻底解决分流失效。
         cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
     "level": "info",
     "timestamp": true
   },
-  "dns": $dns_json,
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns-v4",
+        "address": "https://1.1.1.1/dns-query",
+        "address_resolver": "dns-local",
+        "detour": "direct",
+        "strategy": "ipv4_only"
+      },
+      {
+        "tag": "dns-v6",
+        "address": "https://[2606:4700:4700::1111]/dns-query",
+        "address_resolver": "dns-local",
+        "detour": "direct",
+        "strategy": "ipv6_only"
+      },
+      {
+        "tag": "dns-local",
+        "address": "local",
+        "detour": "direct"
+      }
+    ],
+    "final": "dns-v4"
+  },
   "inbounds": [],
   "outbounds": [
     {
@@ -106,15 +119,16 @@ generate_base_config() {
     {
       "type": "direct",
       "tag": "direct-ipv4",
-      "domain_strategy": "ipv4_only"
+      "domain_resolver": "dns-v4"
     },
     {
       "type": "direct",
       "tag": "direct-ipv6",
-      "domain_strategy": "ipv6_only"
+      "domain_resolver": "dns-v6"
     }
   ],
   "route": {
+    "default_domain_resolver": "dns-v4",
     "rules": [
       {
         "rule_set": ["geosite-google", "geosite-youtube", "geosite-netflix", "geosite-telegram"],
@@ -184,7 +198,23 @@ EOF
     "level": "info",
     "timestamp": true
   },
-  "dns": $dns_json,
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns-v4",
+        "address": "https://1.1.1.1/dns-query",
+        "address_resolver": "dns-local",
+        "detour": "direct",
+        "strategy": "ipv4_only"
+      },
+      {
+        "tag": "dns-local",
+        "address": "local",
+        "detour": "direct"
+      }
+    ],
+    "final": "dns-v4"
+  },
   "inbounds": [],
   "outbounds": [
     {
@@ -193,6 +223,7 @@ EOF
     }
   ],
   "route": {
+    "default_domain_resolver": "dns-v4",
     "rules": [
       {
         "ip_is_private": true,
@@ -209,7 +240,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v2.8 终极完整版)"
+    echo "   sing-box 安装程序 (v2.9 终极完整版)"
     echo "=========================================="
     echo ""
     
@@ -249,7 +280,7 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
 
-    # 生成配置 (含 新版 DoH DNS 模块)
+    # 生成配置 (含 1.12+ 终极修复路由)
     generate_base_config "$HAS_IPV6"
     
     cat > "$SING_BOX_SERVICE" << 'EOF'
@@ -283,7 +314,7 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(1.12+ DNS解析模块已就绪)"
+        success "sing-box 安装成功！(1.12+ IPv6分流完美修复)"
         if [[ "$HAS_IPV6" == "true" ]]; then
             info "智能分流状态: 已开启"
         else
@@ -364,7 +395,7 @@ restart_singbox() {
     fi
 }
 
-# === 核心修正区：所有入站的 sniff 均为 true (布尔值) ===
+# === 节点添加区：恢复完整交互菜单 ===
 
 # 添加VLESS-REALITY配置
 add_vless_reality() {
@@ -403,7 +434,7 @@ add_vless_reality() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
     
-    # 【修复】"sniff": true, 且不再包含 public_key
+    # "sniff": true, 移除废弃字段 sniff_override_destination
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
@@ -411,7 +442,6 @@ add_vless_reality() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -438,7 +468,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     echo ""
-    success "VLESS-REALITY 添加成功！(已强制开启流量嗅探)"
+    success "VLESS-REALITY 添加成功！(1.12+ 适配)"
     echo ""
     echo "📱 完整链接："
     echo ""
@@ -470,7 +500,7 @@ add_http_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/http-${PORT}.json"
     
-    # 【修复】"sniff": true
+    # "sniff": true
     cat > "$CONF_FILE" << EOF
 {
   "type": "http",
@@ -478,7 +508,6 @@ add_http_proxy() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -489,7 +518,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "HTTP 代理添加成功！(已强制开启流量嗅探)"
+    success "HTTP 代理添加成功！"
     echo ""
     echo "🌐 完整地址："
     echo ""
@@ -524,7 +553,6 @@ add_socks5_proxy() {
             info "密码: ${PASS}"
         fi
         
-        # 【修复】"sniff": true
         cat > "$CONF_FILE" << EOF
 {
   "type": "socks",
@@ -532,7 +560,6 @@ add_socks5_proxy() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -543,8 +570,7 @@ EOF
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
-  "sniff_override_destination": true
+  "sniff": true
 }
 EOF
     fi
@@ -555,7 +581,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "SOCKS5 添加成功！(已强制开启流量嗅探)"
+    success "SOCKS5 添加成功！"
     echo ""
     echo "🔌 完整地址："
     echo ""
@@ -713,7 +739,7 @@ manage_route() {
             jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
             mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
             restart_singbox
-            success "分流已开启！完美适配 WARP 网卡。"
+            success "分流已开启！IPv6 路由已修复完毕。"
             ;;
         off)
             info "正在关闭分流，切换至普通模式..."
@@ -748,7 +774,7 @@ manage_route() {
         status)
             info "当前路由分流状态："
             if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
-                success "智能分流功能: [已开启] (包含 DNS & 接口探测)"
+                success "智能分流功能: [已开启]"
             else
                 warn "智能分流功能: [已关闭]"
             fi
@@ -847,7 +873,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v2.8 (1.12+ 终极完整版)
+   sing-box 管理脚本 v2.9 (1.12+ 终极完整版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
@@ -864,7 +890,7 @@ show_help() {
 
 🌐 路由分流管理:
   sb route status     查看分流状态
-  sb route on         开启智能分流
+  sb route on         开启智能分流 (IPv6 分流完美修复)
   sb route off        关闭分流
   sb route add <域名> <v4/v6>  指定域名走 v4 或 v6
 
