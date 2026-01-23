@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v3.0 (1.12+ 官方规范终极修复版)
-# 核心修正: 彻底按照官方 1.12.0 Migration 指南重构 DNS 模块
-# 1. 废弃 "address" 字段，全面采用 "type": "https"/"local" 新格式
-# 2. 修复 DNS 无法解析导致的节点断网问题
-# 3. 消除 legacy DNS servers 警告
+# sing-box 独立管理脚本 v3.1 (1.12+ 终极纯净修复版)
+# 核心修正: 彻底删除 dns.servers 中的非法字段 "strategy" (解决 FATAL)
+# 逻辑重构: 利用出站 (outbounds) 的 domain_strategy 来控制 IP 分流，符合官方最新最佳实践。
+# 特性: 100% 完整交互菜单 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -72,7 +71,7 @@ install_dependencies() {
     fi
 }
 
-# === v3.0 核心修正区：严格采用 1.12+ "type" DNS 新规范 ===
+# === v3.1 核心修正：删除 DNS 中的 strategy，回归官方纯净语法 ===
 generate_base_config() {
     local enable_ipv6=$1
     
@@ -86,18 +85,10 @@ generate_base_config() {
   "dns": {
     "servers": [
       {
-        "tag": "dns-v4",
+        "tag": "dns-remote",
         "type": "https",
         "server": "1.1.1.1",
-        "detour": "direct",
-        "strategy": "ipv4_only"
-      },
-      {
-        "tag": "dns-v6",
-        "type": "https",
-        "server": "2606:4700:4700::1111",
-        "detour": "direct",
-        "strategy": "ipv6_only"
+        "detour": "direct"
       },
       {
         "tag": "dns-local",
@@ -105,7 +96,7 @@ generate_base_config() {
         "detour": "direct"
       }
     ],
-    "final": "dns-v4"
+    "final": "dns-remote"
   },
   "inbounds": [],
   "outbounds": [
@@ -116,16 +107,18 @@ generate_base_config() {
     {
       "type": "direct",
       "tag": "direct-ipv4",
-      "domain_resolver": "dns-v4"
+      "domain_resolver": "dns-remote",
+      "domain_strategy": "ipv4_only"
     },
     {
       "type": "direct",
       "tag": "direct-ipv6",
-      "domain_resolver": "dns-v6"
+      "domain_resolver": "dns-remote",
+      "domain_strategy": "ipv6_only"
     }
   ],
   "route": {
-    "default_domain_resolver": "dns-v4",
+    "default_domain_resolver": "dns-remote",
     "rules": [
       {
         "rule_set": ["geosite-google", "geosite-youtube", "geosite-netflix", "geosite-telegram"],
@@ -197,11 +190,10 @@ EOF
   "dns": {
     "servers": [
       {
-        "tag": "dns-v4",
+        "tag": "dns-remote",
         "type": "https",
         "server": "1.1.1.1",
-        "detour": "direct",
-        "strategy": "ipv4_only"
+        "detour": "direct"
       },
       {
         "tag": "dns-local",
@@ -209,7 +201,7 @@ EOF
         "detour": "direct"
       }
     ],
-    "final": "dns-v4"
+    "final": "dns-remote"
   },
   "inbounds": [],
   "outbounds": [
@@ -219,7 +211,7 @@ EOF
     }
   ],
   "route": {
-    "default_domain_resolver": "dns-v4",
+    "default_domain_resolver": "dns-remote",
     "rules": [
       {
         "ip_is_private": true,
@@ -236,7 +228,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v3.0 官方规范版)"
+    echo "   sing-box 安装程序 (v3.1 终极纯净版)"
     echo "=========================================="
     echo ""
     
@@ -310,7 +302,7 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(1.12+ DNS彻底修复)"
+        success "sing-box 安装成功！(1.12+ 适配通过)"
         if [[ "$HAS_IPV6" == "true" ]]; then
             info "智能分流状态: 已开启"
         else
@@ -867,7 +859,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v3.0 (1.12+ 终极完整版)
+   sing-box 管理脚本 v3.1 (1.12+ 终极完整版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
