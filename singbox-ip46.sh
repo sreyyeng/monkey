@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.3 (完整无色版 + 智能路由)
+# sing-box 独立管理脚本 v2.4 (终极修复完整版)
 # 适配: Sing-box 1.9+ (Rule Set 格式)
-# 功能: 无色防乱码 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
+# 特性: 纯净无色 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
+# 核心修正: [新增] 流量嗅探(Sniff)、[新增] DNS解析模块、[新增] WARP网卡自动探测
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -11,7 +12,7 @@ SING_BOX_CONF_DIR="/etc/sing-box/conf"
 SING_BOX_SERVICE="/etc/systemd/system/sing-box.service"
 SB_SCRIPT="/usr/local/bin/sb"
 
-# 基础输出函数 (已移除颜色代码)
+# 基础输出函数 (无颜色防乱码)
 info() { echo "[INFO] $1"; }
 success() { echo "[成功] $1"; }
 warn() { echo "[警告] $1"; }
@@ -48,13 +49,12 @@ check_arch() {
 # 检查 IPv6 连通性
 check_ipv6() {
     info "正在检测服务器 IPv6 连通性..."
-    # 尝试 ping Google 的 IPv6 地址
     if ping6 -c 1 -W 3 2404:6800:4008:c13::8a &>/dev/null; then
         HAS_IPV6=true
         success "检测到有效 IPv6 网络，将自动配置智能分流。"
     else
         HAS_IPV6=false
-        warn "未检测到有效 IPv6 网络，将使用默认单栈模式 (不分流)。"
+        warn "未检测到有效 IPv6 网络，将使用默认单栈模式。"
     fi
 }
 
@@ -71,33 +71,47 @@ install_dependencies() {
     fi
 }
 
-# 生成基础配置文件 (根据是否开启 IPv6 决定模板)
+# === 核心修正区：生成包含 DNS 模块和 auto_detect_interface 的配置 ===
 generate_base_config() {
     local enable_ipv6=$1
+    
+    # 注入 Cloudflare 双栈 DNS 模块
+    local dns_json='{
+        "servers": [
+            {"tag": "cf", "address": "1.1.1.1"}, 
+            {"tag": "cf-v6", "address": "2606:4700:4700::1111"}
+        ], 
+        "final": "cf", 
+        "strategy": "prefer_ipv4"
+    }'
 
     if [[ "$enable_ipv6" == "true" ]]; then
-        # 启用 IPv6 分流的配置
-        cat > "$SING_BOX_CONFIG" << 'EOF'
+        # 启用 IPv6 分流的配置 (已开启 WARP 网卡自动探测)
+        cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
     "level": "info",
     "timestamp": true
   },
+  "dns": $dns_json,
   "inbounds": [],
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "direct",
+      "auto_detect_interface": true
     },
     {
       "type": "direct",
       "tag": "direct-ipv4",
-      "domain_strategy": "ipv4_only"
+      "domain_strategy": "ipv4_only",
+      "auto_detect_interface": true
     },
     {
       "type": "direct",
       "tag": "direct-ipv6",
-      "domain_strategy": "ipv6_only"
+      "domain_strategy": "ipv6_only",
+      "auto_detect_interface": true
     }
   ],
   "route": {
@@ -164,17 +178,19 @@ generate_base_config() {
 EOF
     else
         # 纯 IPv4 / 无分流配置
-        cat > "$SING_BOX_CONFIG" << 'EOF'
+        cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
     "level": "info",
     "timestamp": true
   },
+  "dns": $dns_json,
   "inbounds": [],
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "direct",
+      "auto_detect_interface": true
     }
   ],
   "route": {
@@ -194,7 +210,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v2.3 完整版)"
+    echo "   sing-box 安装程序 (v2.4 终极完整版)"
     echo "=========================================="
     echo ""
     
@@ -208,8 +224,6 @@ install_singbox() {
     fi
     
     install_dependencies
-    
-    # 自动探测 IPv6
     check_ipv6
     
     info "获取最新版本信息..."
@@ -236,7 +250,7 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
 
-    # 根据探测结果生成配置
+    # 生成配置 (含 DNS 模块)
     generate_base_config "$HAS_IPV6"
     
     cat > "$SING_BOX_SERVICE" << 'EOF'
@@ -270,9 +284,9 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！"
+        success "sing-box 安装成功！(DNS解析模块已就绪)"
         if [[ "$HAS_IPV6" == "true" ]]; then
-            info "智能分流状态: 已开启 (Google/Netflix 优先走 IPv6)"
+            info "智能分流状态: 已开启 (完美适配 WARP 网卡)"
         else
             info "智能分流状态: 未开启 (未检测到 IPv6)"
         fi
@@ -363,14 +377,13 @@ manage_route() {
     case $action in
         on)
             info "正在开启 IPv4/v6 智能分流..."
-            # 备份现有 inbounds
             cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
             local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
             generate_base_config "true"
             jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
             mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
             restart_singbox
-            success "分流已开启！Google/Youtube/Netflix/TG 将优先走 IPv6。"
+            success "分流已开启！完美适配 WARP 网卡。"
             ;;
         off)
             info "正在关闭分流，切换至普通模式..."
@@ -386,7 +399,6 @@ manage_route() {
             [[ -z "$domain" || -z "$target" ]] && error "用法: sb route add <域名> <v4/v6>"
             [[ "$target" != "v4" && "$target" != "v6" ]] && error "目标只能是 v4 或 v6"
             
-            # 检查是否开启了分流功能
             if ! jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
                 error "当前未开启分流功能，请先执行 'sb route on' 开启。"
             fi
@@ -395,7 +407,6 @@ manage_route() {
             local outbound_tag="direct-ipv4"
             [[ "$target" == "v6" ]] && outbound_tag="direct-ipv6"
 
-            # 使用 jq 在 rules 数组最前面插入新规则
             jq --arg domain "$domain" --arg out "$outbound_tag" \
                '.route.rules = [{"domain": [$domain], "outbound": $out}] + .route.rules' \
                "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
@@ -407,12 +418,9 @@ manage_route() {
         status)
             info "当前路由分流状态："
             if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
-                success "智能分流功能: [已开启]"
-                echo "默认走 IPv6 的服务: Google, Youtube, Netflix, Telegram"
-                echo "国内网站(CN): 走 IPv4"
+                success "智能分流功能: [已开启] (包含 DNS & 接口探测)"
             else
                 warn "智能分流功能: [已关闭]"
-                echo "所有流量走系统默认路由。"
             fi
             ;;
         *)
@@ -424,13 +432,11 @@ manage_route() {
             echo "  sb route on               - 开启智能分流 (需有 IPv6)"
             echo "  sb route off              - 关闭分流 (单栈模式)"
             echo "  sb route add <域名> <v4/v6> - 指定网站走 v4 或 v6"
-            echo ""
-            echo "示例:"
-            echo "  sb route add ip.sb v6     - 让 ip.sb 网站强制走 IPv6"
-            echo "  sb route add openai.com v4 - 让 ChatGPT 强制走 IPv4"
             ;;
     esac
 }
+
+# === 核心修正区：所有入站必须强制开启 sniff 流量嗅探 ===
 
 # 添加VLESS-REALITY配置
 add_vless_reality() {
@@ -468,6 +474,8 @@ add_vless_reality() {
   "tag": "vless-reality-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -496,16 +504,11 @@ EOF
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     echo ""
-    success "VLESS-REALITY 添加成功！"
+    success "VLESS-REALITY 添加成功！(已强制开启流量嗅探)"
     echo ""
     echo "📱 完整链接："
     echo ""
     echo "${VLESS_LINK}"
-    echo ""
-    echo "配置详情："
-    echo "  目标服务器: ${DEST_SERVER}"
-    echo "  目标端口: ${DEST_PORT}"
-    echo "  SNI: ${SNI}"
     echo ""
     read -p "按回车继续..." dummy
 }
@@ -538,6 +541,8 @@ add_http_proxy() {
   "tag": "http-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -548,7 +553,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "HTTP 代理添加成功！"
+    success "HTTP 代理添加成功！(已强制开启流量嗅探)"
     echo ""
     echo "🌐 完整地址："
     echo ""
@@ -588,6 +593,8 @@ add_socks5_proxy() {
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -597,7 +604,9 @@ EOF
   "type": "socks",
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
-  "listen_port": ${PORT}
+  "listen_port": ${PORT},
+  "sniff": true,
+  "sniff_override_destination": true
 }
 EOF
     fi
@@ -608,7 +617,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "SOCKS5 添加成功！"
+    success "SOCKS5 添加成功！(已强制开启流量嗅探)"
     echo ""
     echo "🔌 完整地址："
     echo ""
@@ -621,7 +630,7 @@ EOF
     read -p "按回车继续..." dummy
 }
 
-# 列出配置（交互式，保持了原有的完整功能）
+# 列出配置（交互式）
 list_configs() {
     clear
     echo "=========================================="
@@ -673,7 +682,7 @@ list_configs() {
     show_config_info "${tags[$index]}"
 }
 
-# 显示配置详情 (原封不动还原)
+# 显示配置详情
 show_config_info() {
     local tag=$1
     [[ -z "$tag" ]] && error "请指定配置标签"
@@ -748,7 +757,7 @@ show_config_info() {
     list_configs
 }
 
-# 删除配置 (原封不动还原)
+# 删除配置
 delete_config() {
     local tag=$1
     
@@ -779,7 +788,7 @@ delete_config() {
     success "配置已删除: $tag"
 }
 
-# 卸载sing-box (原封不动还原)
+# 卸载sing-box
 uninstall_singbox() {
     clear
     echo "=========================================="
@@ -828,7 +837,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      sing-box 管理脚本 v2.3
+   sing-box 管理脚本 v2.4 (终极版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
@@ -843,7 +852,7 @@ show_help() {
   sb info <tag>       显示配置详情
   sb delete <tag>     删除配置
 
-🌐 路由分流管理 (新):
+🌐 路由分流管理:
   sb route status     查看分流状态
   sb route on         开启智能分流
   sb route off        关闭分流
@@ -868,7 +877,6 @@ show_log() {
 
 # 主函数
 main() {
-    # 自动修复 sb 命令（如果需要）
     auto_fix_sb_command "$1"
     
     case ${1,,} in
