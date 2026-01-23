@@ -6,3 +6,6 @@ wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-i
 
 #分流
 wget https://raw.githubusercontent.com/sreyyeng/monkey/refs/heads/main/singbox-ip46.sh -O /root/singbox-ip46.sh && chmod +x /root/singbox-ip46.sh && /root/singbox-ip46.sh install
+
+warp
+wget -N https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh && bash menu.sh
