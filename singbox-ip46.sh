@@ -1272,7 +1272,7 @@ main() {
             uninstall_singbox 
             ;;
         route) 
-            manage_route "$2" "$3" "$4" 
+            manage_route "${2:-}" "${3:-}" "${4:-}" 
             ;;
         list|ls) 
             list_configs 
