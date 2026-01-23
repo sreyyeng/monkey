@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.5 (终极修复完整版)
-# 适配: Sing-box 1.9+ / 1.10+ (Rule Set 格式)
-# 修复: VLESS配置非法字段、HTTP/SOCKS字段冲突、开放配置查错日志
+# sing-box 独立管理脚本 v2.6 (完整终极版)
+# 适配: Sing-box 1.12+ 最新语法 (Rule Set / Sniff 布尔值 / UDP DNS)
+# 特性: IPv6 自动探测 / 动态路由管理 / 完整增删改查 / 交互式菜单
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -70,15 +70,14 @@ install_dependencies() {
     fi
 }
 
-# 生成基础配置
+# === 核心修正：适配 1.12+ DNS 语法 (udp://) ===
 generate_base_config() {
     local enable_ipv6=$1
     
-    # 注入 Cloudflare 双栈 DNS 模块
     local dns_json='{
         "servers": [
-            {"tag": "cf", "address": "1.1.1.1"}, 
-            {"tag": "cf-v6", "address": "2606:4700:4700::1111"}
+            {"tag": "cf", "address": "udp://1.1.1.1"}, 
+            {"tag": "cf-v6", "address": "udp://[2606:4700:4700::1111]"}
         ], 
         "final": "cf", 
         "strategy": "prefer_ipv4"
@@ -175,7 +174,6 @@ generate_base_config() {
 }
 EOF
     else
-        # 纯 IPv4 配置
         cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
@@ -208,7 +206,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v2.5 终极完整版)"
+    echo "   sing-box 安装程序 (v2.6 1.12+ 适配版)"
     echo "=========================================="
     echo ""
     
@@ -217,7 +215,7 @@ install_singbox() {
     
     if [[ -f "$SING_BOX_BIN" ]]; then
         warn "sing-box 已安装"
-        read -p "是否重新安装? (y/n): " confirm
+        read -p "是否重新安装覆盖? (y/n): " confirm
         [[ "$confirm" != "y" ]] && exit 0
     fi
     
@@ -281,7 +279,7 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(DNS解析模块已就绪)"
+        success "sing-box 安装成功！(1.12+ 适配版已就绪)"
         echo ""
     else
         error "sing-box 服务启动失败，请使用 sb log 查看日志"
@@ -319,9 +317,8 @@ add_inbound_to_config() {
     local conf_file=$1
     [[ ! -f "$conf_file" ]] && error "配置文件不存在: $conf_file"
     
-    # 注入前先验证 JSON 合法性
     if ! jq . "$conf_file" >/dev/null 2>&1; then
-        error "即将添加的配置非合法 JSON 格式，请检查生成逻辑！"
+        error "即将添加的配置非合法 JSON 格式，请检查！"
     fi
 
     local new_inbound=$(cat "$conf_file")
@@ -330,13 +327,13 @@ add_inbound_to_config() {
     if [[ $? -eq 0 ]]; then
         mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
     else
-        error "合并配置失败，请检查 jq 工具是否正常。"
+        error "合并配置失败。"
     fi
 }
 
 restart_singbox() {
     info "测试配置文件语法..."
-    # 【修复】移除了 &>/dev/null，让错误直接输出在终端，方便排查
+    # 开放报错显示，不屏蔽输出
     if ! "$SING_BOX_BIN" check -c "$SING_BOX_CONFIG"; then
         echo ""
         error "配置文件语法错误！请根据上方的 Sing-box 报错信息排查。"
@@ -353,7 +350,9 @@ restart_singbox() {
     fi
 }
 
-# 添加VLESS-REALITY配置
+# === 核心修正：添加配置时 sniff 使用纯布尔值 ===
+
+# 添加 VLESS-REALITY
 add_vless_reality() {
     clear
     echo "=========================================="
@@ -363,7 +362,6 @@ add_vless_reality() {
     
     read -p "端口 (默认随机): " PORT
     [[ -z "$PORT" ]] && PORT=$(generate_port)
-    # 强制校验端口合法性
     if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -gt 65535 ]; then error "非法端口号"; fi
     
     read -p "UUID (默认随机): " UUID
@@ -385,23 +383,17 @@ add_vless_reality() {
     PUBLIC_KEY=$(echo "$KEYPAIR" | grep "PublicKey" | awk '{print $2}')
     SHORT_ID=$(generate_short_id)
 
-    if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-        error "密钥对生成失败，请检查 sing-box 是否正常。"
-    fi
-    
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
     
-    # 【核心修复】直接生成完全合规的 JSON，绝不包含 public_key
+    # 【修复】"sniff": true, 且不再包含 public_key
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
   "tag": "vless-reality-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": {
-    "enabled": true,
-    "override_destination": true
-  },
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -419,7 +411,7 @@ add_vless_reality() {
 }
 EOF
     
-    # 将公钥单独保存到 .pub 文件中备查，不污染主配置
+    # 公钥单独保存
     echo "$PUBLIC_KEY" > "${CONF_FILE}.pub"
 
     add_inbound_to_config "$CONF_FILE"
@@ -428,7 +420,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     echo ""
-    success "VLESS-REALITY 添加成功！(已强制开启流量嗅探)"
+    success "VLESS-REALITY 添加成功！(1.12+ 适配)"
     echo ""
     echo "📱 完整链接："
     echo ""
@@ -437,7 +429,7 @@ EOF
     read -p "按回车继续..." dummy
 }
 
-# 添加HTTP代理
+# 添加 HTTP 代理
 add_http_proxy() {
     clear
     echo "=========================================="
@@ -460,17 +452,15 @@ add_http_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/http-${PORT}.json"
     
-    # 【修复】删除了冲突的 sniff_override_destination
+    # 【修复】"sniff": true
     cat > "$CONF_FILE" << EOF
 {
   "type": "http",
   "tag": "http-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": {
-    "enabled": true,
-    "override_destination": true
-  },
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -490,7 +480,7 @@ EOF
     read -p "按回车继续..." dummy
 }
 
-# 添加SOCKS5代理
+# 添加 SOCKS5 代理
 add_socks5_proxy() {
     clear
     echo "=========================================="
@@ -505,7 +495,7 @@ add_socks5_proxy() {
     read -p "需要认证? (y/n, 默认n): " AUTH
     CONF_FILE="${SING_BOX_CONF_DIR}/socks-${PORT}.json"
     
-    # 【修复】同样移除了过时的 sniff 字段
+    # 【修复】"sniff": true
     if [[ "$AUTH" == "y" ]]; then
         read -p "用户名 (默认socksuser): " USER
         [[ -z "$USER" ]] && USER="socksuser"
@@ -518,10 +508,8 @@ add_socks5_proxy() {
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": {
-    "enabled": true,
-    "override_destination": true
-  },
+  "sniff": true,
+  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -532,10 +520,8 @@ EOF
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": {
-    "enabled": true,
-    "override_destination": true
-  }
+  "sniff": true,
+  "sniff_override_destination": true
 }
 EOF
     fi
@@ -558,7 +544,7 @@ EOF
     read -p "按回车继续..." dummy
 }
 
-# 以下 show_config_info 函数修复：从 .pub 文件读取公钥
+# 显示配置详情
 show_config_info() {
     local tag=$1
     [[ -z "$tag" ]] && error "请指定配置标签"
@@ -592,7 +578,7 @@ show_config_info() {
         
         local conf_file="${SING_BOX_CONF_DIR}/${tag}.json"
         local public_key=""
-        # 【修复】改为从 .pub 文件读取公钥
+        # 从 .pub 文件读取公钥
         if [[ -f "${conf_file}.pub" ]]; then
             public_key=$(cat "${conf_file}.pub")
         fi
@@ -629,81 +615,10 @@ show_config_info() {
     
     echo ""
     read -p "按回车返回..." dummy
+    list_configs
 }
 
-# (由于字数限制，其他删除配置、卸载、帮助函数与原版一致，未做逻辑改动，直接运行即可)
-
-# 动态路由管理
-manage_route() {
-    local action=$1
-    local domain=$2
-    local target=$3
-
-    [[ ! -f "$SING_BOX_CONFIG" ]] && error "未找到配置文件"
-
-    case $action in
-        on)
-            info "正在开启 IPv4/v6 智能分流..."
-            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
-            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
-            generate_base_config "true"
-            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
-            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
-            restart_singbox
-            success "分流已开启！完美适配 WARP 网卡。"
-            ;;
-        off)
-            info "正在关闭分流，切换至普通模式..."
-            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
-            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
-            generate_base_config "false"
-            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
-            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
-            restart_singbox
-            success "分流已关闭！所有流量将走默认路由。"
-            ;;
-        add)
-            [[ -z "$domain" || -z "$target" ]] && error "用法: sb route add <域名> <v4/v6>"
-            [[ "$target" != "v4" && "$target" != "v6" ]] && error "目标只能是 v4 或 v6"
-            
-            if ! jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
-                error "当前未开启分流功能，请先执行 'sb route on' 开启。"
-            fi
-
-            info "正在添加规则: 访问 $domain 将走 IPv$target"
-            local outbound_tag="direct-ipv4"
-            [[ "$target" == "v6" ]] && outbound_tag="direct-ipv6"
-
-            jq --arg domain "$domain" --arg out "$outbound_tag" \
-               '.route.rules = [{"domain": [$domain], "outbound": $out}] + .route.rules' \
-               "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
-            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
-            
-            restart_singbox
-            success "已添加临时分流规则: $domain -> IPv$target"
-            ;;
-        status)
-            info "当前路由分流状态："
-            if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
-                success "智能分流功能: [已开启] (包含 DNS & 接口探测)"
-            else
-                warn "智能分流功能: [已关闭]"
-            fi
-            ;;
-        *)
-            echo "=========================================="
-            echo "   路由分流管理帮助"
-            echo "=========================================="
-            echo "命令用法:"
-            echo "  sb route status            - 查看当前分流状态"
-            echo "  sb route on                - 开启智能分流 (需有 IPv6)"
-            echo "  sb route off               - 关闭分流 (单栈模式)"
-            echo "  sb route add <域名> <v4/v6> - 指定网站走 v4 或 v6"
-            ;;
-    esac
-}
-
-# 列出配置（交互式）
+# 列出配置
 list_configs() {
     clear
     echo "=========================================="
@@ -755,6 +670,77 @@ list_configs() {
     show_config_info "${tags[$index]}"
 }
 
+# 动态路由管理
+manage_route() {
+    local action=$1
+    local domain=$2
+    local target=$3
+
+    [[ ! -f "$SING_BOX_CONFIG" ]] && error "未找到配置文件"
+
+    case $action in
+        on)
+            info "正在开启 IPv4/v6 智能分流..."
+            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
+            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
+            generate_base_config "true"
+            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            restart_singbox
+            success "分流已开启！"
+            ;;
+        off)
+            info "正在关闭分流，切换至普通模式..."
+            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
+            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
+            generate_base_config "false"
+            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            restart_singbox
+            success "分流已关闭！"
+            ;;
+        add)
+            [[ -z "$domain" || -z "$target" ]] && error "用法: sb route add <域名> <v4/v6>"
+            [[ "$target" != "v4" && "$target" != "v6" ]] && error "目标只能是 v4 或 v6"
+            
+            if ! jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
+                error "当前未开启分流功能，请先执行 'sb route on' 开启。"
+            fi
+
+            info "正在添加规则: 访问 $domain 将走 IPv$target"
+            local outbound_tag="direct-ipv4"
+            [[ "$target" == "v6" ]] && outbound_tag="direct-ipv6"
+
+            jq --arg domain "$domain" --arg out "$outbound_tag" \
+               '.route.rules = [{"domain": [$domain], "outbound": $out}] + .route.rules' \
+               "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            
+            restart_singbox
+            success "已添加临时分流规则: $domain -> IPv$target"
+            ;;
+        status)
+            info "当前路由分流状态："
+            if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
+                success "智能分流功能: [已开启]"
+            else
+                warn "智能分流功能: [已关闭]"
+            fi
+            ;;
+        *)
+            echo "=========================================="
+            echo "   路由分流管理帮助"
+            echo "=========================================="
+            echo "命令用法:"
+            echo "  sb route status            - 查看当前分流状态"
+            echo "  sb route on                - 开启智能分流 (需有 IPv6)"
+            echo "  sb route off               - 关闭分流 (单栈模式)"
+            echo "  sb route add <域名> <v4/v6> - 指定网站走 v4 或 v6"
+            ;;
+    esac
+}
+
+# 删除配置
 delete_config() {
     local tag=$1
     if [[ -z "$tag" ]]; then
@@ -763,20 +749,26 @@ delete_config() {
         read -p "请输入要删除的配置标签: " tag
     fi
     [[ -z "$tag" ]] && error "配置标签不能为空"
+    
     local exists=$(jq -r ".inbounds[] | select(.tag == \"$tag\") | .tag" "$SING_BOX_CONFIG" 2>/dev/null)
     [[ -z "$exists" ]] && error "配置不存在: $tag"
+    
     warn "即将删除配置: $tag"
     read -p "确认删除? (y/n): " confirm
     [[ "$confirm" != "y" ]] && { info "已取消"; exit 0; }
+    
     cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.backup.$(date +%s)"
     jq "del(.inbounds[] | select(.tag == \"$tag\"))" "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
     mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+    
     find "$SING_BOX_CONF_DIR" -name "*${tag}*.json" -delete 2>/dev/null
     find "$SING_BOX_CONF_DIR" -name "*${tag}*.json.pub" -delete 2>/dev/null
+    
     restart_singbox
     success "配置已删除: $tag"
 }
 
+# 卸载
 uninstall_singbox() {
     clear
     echo "=========================================="
@@ -788,6 +780,7 @@ uninstall_singbox() {
     echo ""
     read -p "确认卸载? 输入 'YES' 继续: " confirm
     [[ "$confirm" != "YES" ]] && { info "已取消"; exit 0; }
+    
     echo ""
     info "开始卸载..."
     systemctl is-active --quiet sing-box && systemctl stop sing-box
@@ -795,6 +788,7 @@ uninstall_singbox() {
     [[ -f "$SING_BOX_SERVICE" ]] && rm -f "$SING_BOX_SERVICE"
     systemctl daemon-reload
     [[ -f "$SING_BOX_BIN" ]] && rm -f "$SING_BOX_BIN"
+    
     if [[ -d "/etc/sing-box" ]]; then
         read -p "备份配置? (y/n): " backup
         if [[ "$backup" == "y" ]]; then
@@ -805,6 +799,7 @@ uninstall_singbox() {
         fi
         rm -rf /etc/sing-box
     fi
+    
     [[ -f "$SB_SCRIPT" ]] && rm -f "$SB_SCRIPT"
     [[ -d "/var/log/sing-box" ]] && rm -rf /var/log/sing-box
     echo ""
@@ -812,10 +807,11 @@ uninstall_singbox() {
     echo ""
 }
 
+# 帮助菜单
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v2.5 (终极修复版)
+   sing-box 管理脚本 v2.6 (1.12+ 终极版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
@@ -845,6 +841,7 @@ show_help() {
 EOF
 }
 
+# 查看日志
 show_log() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "   实时日志 (Ctrl+C 退出)"
@@ -856,6 +853,7 @@ show_log() {
 # 主函数
 main() {
     auto_fix_sb_command "$1"
+    
     case ${1,,} in
         install) install_singbox ;;
         uninstall) uninstall_singbox ;;
