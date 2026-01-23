@@ -1,12 +1,10 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.9 (1.12+ 终极完整修复版)
-# 适配: Sing-box 1.12+ 最新语法规范
-# 核心修正:
-# 1. [WARN修复] 彻底解决 missing domain_resolver 导致的 IPv6 分流失效。
-# 2. [WARN修复] 消除 legacy domain strategy 警告，重构 DNS 解析树。
-# 3. [FATAL修复] 流量嗅探 sniff 改为纯布尔值 true，移除废弃字段。
-# 特性: 100% 完整交互菜单 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
+# sing-box 独立管理脚本 v3.0 (1.12+ 官方规范终极修复版)
+# 核心修正: 彻底按照官方 1.12.0 Migration 指南重构 DNS 模块
+# 1. 废弃 "address" 字段，全面采用 "type": "https"/"local" 新格式
+# 2. 修复 DNS 无法解析导致的节点断网问题
+# 3. 消除 legacy DNS servers 警告
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -74,12 +72,11 @@ install_dependencies() {
     fi
 }
 
-# === v2.9 核心修正区：彻底重构 1.12+ 的 DNS 解析树与出站绑定 ===
+# === v3.0 核心修正区：严格采用 1.12+ "type" DNS 新规范 ===
 generate_base_config() {
     local enable_ipv6=$1
     
     if [[ "$enable_ipv6" == "true" ]]; then
-        # 启用 IPv6：配置独立的 V4/V6 解析器，并绑定到对应的出站，彻底解决分流失效。
         cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
@@ -90,21 +87,21 @@ generate_base_config() {
     "servers": [
       {
         "tag": "dns-v4",
-        "address": "https://1.1.1.1/dns-query",
-        "address_resolver": "dns-local",
+        "type": "https",
+        "server": "1.1.1.1",
         "detour": "direct",
         "strategy": "ipv4_only"
       },
       {
         "tag": "dns-v6",
-        "address": "https://[2606:4700:4700::1111]/dns-query",
-        "address_resolver": "dns-local",
+        "type": "https",
+        "server": "2606:4700:4700::1111",
         "detour": "direct",
         "strategy": "ipv6_only"
       },
       {
         "tag": "dns-local",
-        "address": "local",
+        "type": "local",
         "detour": "direct"
       }
     ],
@@ -191,7 +188,6 @@ generate_base_config() {
 }
 EOF
     else
-        # 纯 IPv4 / 无分流配置
         cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
@@ -202,14 +198,14 @@ EOF
     "servers": [
       {
         "tag": "dns-v4",
-        "address": "https://1.1.1.1/dns-query",
-        "address_resolver": "dns-local",
+        "type": "https",
+        "server": "1.1.1.1",
         "detour": "direct",
         "strategy": "ipv4_only"
       },
       {
         "tag": "dns-local",
-        "address": "local",
+        "type": "local",
         "detour": "direct"
       }
     ],
@@ -240,7 +236,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v2.9 终极完整版)"
+    echo "   sing-box 安装程序 (v3.0 官方规范版)"
     echo "=========================================="
     echo ""
     
@@ -280,7 +276,7 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
 
-    # 生成配置 (含 1.12+ 终极修复路由)
+    # 生成配置
     generate_base_config "$HAS_IPV6"
     
     cat > "$SING_BOX_SERVICE" << 'EOF'
@@ -314,7 +310,7 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(1.12+ IPv6分流完美修复)"
+        success "sing-box 安装成功！(1.12+ DNS彻底修复)"
         if [[ "$HAS_IPV6" == "true" ]]; then
             info "智能分流状态: 已开启"
         else
@@ -434,7 +430,6 @@ add_vless_reality() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
     
-    # "sniff": true, 移除废弃字段 sniff_override_destination
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
@@ -500,7 +495,6 @@ add_http_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/http-${PORT}.json"
     
-    # "sniff": true
     cat > "$CONF_FILE" << EOF
 {
   "type": "http",
@@ -873,7 +867,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v2.9 (1.12+ 终极完整版)
+   sing-box 管理脚本 v3.0 (1.12+ 终极完整版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
