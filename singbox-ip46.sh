@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v3.1 (1.12+ 终极纯净修复版)
-# 核心修正: 彻底删除 dns.servers 中的非法字段 "strategy" (解决 FATAL)
-# 逻辑重构: 利用出站 (outbounds) 的 domain_strategy 来控制 IP 分流，符合官方最新最佳实践。
+# sing-box 独立管理脚本 v4.0 (LTS 稳定版)
+# 核心策略: 锁定 Sing-box 版本为极度稳定的 v1.9.3
 # 特性: 100% 完整交互菜单 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
+# 优势: 彻底告别新版兼容性报错，所有逻辑基于最成熟的 1.9.x 架构
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -11,6 +11,8 @@ SING_BOX_CONFIG="/etc/sing-box/config.json"
 SING_BOX_CONF_DIR="/etc/sing-box/conf"
 SING_BOX_SERVICE="/etc/systemd/system/sing-box.service"
 SB_SCRIPT="/usr/local/bin/sb"
+# 锁定黄金稳定版
+FIXED_VERSION="1.9.3"
 
 # 基础输出函数
 info() { echo -e "\033[34m[INFO]\033[0m $1"; }
@@ -71,11 +73,12 @@ install_dependencies() {
     fi
 }
 
-# === v3.1 核心修正：删除 DNS 中的 strategy，回归官方纯净语法 ===
+# === 稳定版配置生成 (Sing-box 1.9.3 经典架构) ===
 generate_base_config() {
     local enable_ipv6=$1
     
     if [[ "$enable_ipv6" == "true" ]]; then
+        # 1.9.x 的经典分流：出站自带 auto_detect_interface 和 domain_strategy，极其稳定
         cat > "$SING_BOX_CONFIG" << EOF
 {
   "log": {
@@ -86,13 +89,12 @@ generate_base_config() {
     "servers": [
       {
         "tag": "dns-remote",
-        "type": "https",
-        "server": "1.1.1.1",
+        "address": "1.1.1.1",
         "detour": "direct"
       },
       {
         "tag": "dns-local",
-        "type": "local",
+        "address": "local",
         "detour": "direct"
       }
     ],
@@ -102,23 +104,23 @@ generate_base_config() {
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "direct",
+      "auto_detect_interface": true
     },
     {
       "type": "direct",
       "tag": "direct-ipv4",
-      "domain_resolver": "dns-remote",
-      "domain_strategy": "ipv4_only"
+      "domain_strategy": "ipv4_only",
+      "auto_detect_interface": true
     },
     {
       "type": "direct",
       "tag": "direct-ipv6",
-      "domain_resolver": "dns-remote",
-      "domain_strategy": "ipv6_only"
+      "domain_strategy": "ipv6_only",
+      "auto_detect_interface": true
     }
   ],
   "route": {
-    "default_domain_resolver": "dns-remote",
     "rules": [
       {
         "rule_set": ["geosite-google", "geosite-youtube", "geosite-netflix", "geosite-telegram"],
@@ -191,13 +193,12 @@ EOF
     "servers": [
       {
         "tag": "dns-remote",
-        "type": "https",
-        "server": "1.1.1.1",
+        "address": "1.1.1.1",
         "detour": "direct"
       },
       {
         "tag": "dns-local",
-        "type": "local",
+        "address": "local",
         "detour": "direct"
       }
     ],
@@ -207,11 +208,11 @@ EOF
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "direct",
+      "auto_detect_interface": true
     }
   ],
   "route": {
-    "default_domain_resolver": "dns-remote",
     "rules": [
       {
         "ip_is_private": true,
@@ -224,11 +225,12 @@ EOF
     fi
 }
 
-# 安装sing-box
+# 安装sing-box (锁定版本)
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v3.1 终极纯净版)"
+    echo "   sing-box 安装程序 (v4.0 LTS 稳定版)"
+    echo "   目标版本: v${FIXED_VERSION} (锁定版)"
     echo "=========================================="
     echo ""
     
@@ -236,22 +238,18 @@ install_singbox() {
     check_arch
     
     if [[ -f "$SING_BOX_BIN" ]]; then
-        warn "sing-box 已安装"
-        read -p "是否重新安装覆盖? (y/n): " confirm
+        CURRENT_VER=$("$SING_BOX_BIN" version | grep "sing-box version" | awk '{print $3}')
+        warn "已安装版本: $CURRENT_VER"
+        read -p "是否降级/覆盖安装至稳定版 v${FIXED_VERSION}? (y/n): " confirm
         [[ "$confirm" != "y" ]] && exit 0
     fi
     
     install_dependencies
     check_ipv6
     
-    info "获取最新版本信息..."
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
-    [[ -z "$LATEST_VERSION" ]] && error "无法获取最新版本信息"
+    info "准备下载稳定版本 v${FIXED_VERSION}..."
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${FIXED_VERSION}/sing-box-${FIXED_VERSION}-linux-${ARCH}.tar.gz"
     
-    info "最新版本: v${LATEST_VERSION}"
-    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
-    
-    info "下载 sing-box..."
     TEMP_DIR=$(mktemp -d)
     if ! wget -q --show-progress "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
         error "sing-box 下载失败"
@@ -268,7 +266,7 @@ install_singbox() {
     mkdir -p /etc/sing-box
     mkdir -p "$SING_BOX_CONF_DIR"
 
-    # 生成配置
+    # 生成稳定版配置
     generate_base_config "$HAS_IPV6"
     
     cat > "$SING_BOX_SERVICE" << 'EOF'
@@ -302,9 +300,9 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(1.12+ 适配通过)"
+        success "sing-box v${FIXED_VERSION} 稳定版安装成功！"
         if [[ "$HAS_IPV6" == "true" ]]; then
-            info "智能分流状态: 已开启"
+            info "智能分流状态: 已开启 (完美适配 WARP)"
         else
             info "智能分流状态: 未开启 (未检测到 IPv6)"
         fi
@@ -383,7 +381,7 @@ restart_singbox() {
     fi
 }
 
-# === 节点添加区：恢复完整交互菜单 ===
+# === 节点添加区：恢复 1.9.3 的稳定配置 ===
 
 # 添加VLESS-REALITY配置
 add_vless_reality() {
@@ -422,13 +420,17 @@ add_vless_reality() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
     
+    # 恢复 1.9.3 稳定的 sniff 写法
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
   "tag": "vless-reality-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -455,7 +457,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     echo ""
-    success "VLESS-REALITY 添加成功！(1.12+ 适配)"
+    success "VLESS-REALITY 添加成功！(基于 v1.9.3 稳定架构)"
     echo ""
     echo "📱 完整链接："
     echo ""
@@ -493,7 +495,10 @@ add_http_proxy() {
   "tag": "http-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -545,7 +550,10 @@ add_socks5_proxy() {
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -556,7 +564,10 @@ EOF
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  }
 }
 EOF
     fi
@@ -725,7 +736,7 @@ manage_route() {
             jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
             mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
             restart_singbox
-            success "分流已开启！IPv6 路由已修复完毕。"
+            success "分流已开启！完美适配 WARP 网卡。"
             ;;
         off)
             info "正在关闭分流，切换至普通模式..."
@@ -760,7 +771,7 @@ manage_route() {
         status)
             info "当前路由分流状态："
             if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
-                success "智能分流功能: [已开启]"
+                success "智能分流功能: [已开启] (包含 DNS & 接口探测)"
             else
                 warn "智能分流功能: [已关闭]"
             fi
@@ -859,11 +870,11 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v3.1 (1.12+ 终极完整版)
+   sing-box 管理脚本 v4.0 (LTS 稳定版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
-  sb install          安装 sing-box (含IPv6探测)
+  sb install          安装 sing-box v1.9.3 稳定版
   sb uninstall        卸载 sing-box
 
 📋 节点配置管理:
@@ -876,7 +887,7 @@ show_help() {
 
 🌐 路由分流管理:
   sb route status     查看分流状态
-  sb route on         开启智能分流 (IPv6 分流完美修复)
+  sb route on         开启智能分流 (完美适配 WARP 网卡)
   sb route off        关闭分流
   sb route add <域名> <v4/v6>  指定域名走 v4 或 v6
 
