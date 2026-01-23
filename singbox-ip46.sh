@@ -1,17 +1,8 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.2 (IPv4/v6 分流修复版)
-# 适配: Sing-box 1.9+ (使用 Rule Set 新格式)
-# 功能: 自动根据规则分流 IPv4/IPv6
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+# sing-box 独立管理脚本 v2.3 (完整无色版 + 智能路由)
+# 适配: Sing-box 1.9+ (Rule Set 格式)
+# 功能: 无色防乱码 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -20,11 +11,11 @@ SING_BOX_CONF_DIR="/etc/sing-box/conf"
 SING_BOX_SERVICE="/etc/systemd/system/sing-box.service"
 SB_SCRIPT="/usr/local/bin/sb"
 
-# 输出函数
-info() { echo -e "${CYAN}[INFO]${NC} $1"; }
-success() { echo -e "${GREEN}[✓]${NC} $1"; }
-warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+# 基础输出函数 (已移除颜色代码)
+info() { echo "[INFO] $1"; }
+success() { echo "[成功] $1"; }
+warn() { echo "[警告] $1"; }
+error() { echo "[错误] $1"; exit 1; }
 
 # 检查root权限
 check_root() {
@@ -54,67 +45,39 @@ check_arch() {
     esac
 }
 
+# 检查 IPv6 连通性
+check_ipv6() {
+    info "正在检测服务器 IPv6 连通性..."
+    # 尝试 ping Google 的 IPv6 地址
+    if ping6 -c 1 -W 3 2404:6800:4008:c13::8a &>/dev/null; then
+        HAS_IPV6=true
+        success "检测到有效 IPv6 网络，将自动配置智能分流。"
+    else
+        HAS_IPV6=false
+        warn "未检测到有效 IPv6 网络，将使用默认单栈模式 (不分流)。"
+    fi
+}
+
 # 安装依赖
 install_dependencies() {
     info "安装依赖包..."
     if command -v apt-get &>/dev/null; then
         apt-get update -qq
-        apt-get install -y curl wget jq tar gzip &>/dev/null
+        apt-get install -y curl wget jq tar gzip openssl &>/dev/null
     elif command -v yum &>/dev/null; then
-        yum install -y curl wget jq tar gzip &>/dev/null
+        yum install -y curl wget jq tar gzip openssl &>/dev/null
     else
         error "不支持的包管理器"
     fi
 }
 
-# 安装sing-box (核心修改部分: 适配新版 Rule Set)
-install_singbox() {
-    clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   sing-box 安装程序 (v2.2 修复版)"
-    echo -e "==========================================${NC}"
-    echo ""
-    
-    check_root
-    check_arch
-    
-    if [[ -f "$SING_BOX_BIN" ]]; then
-        warn "sing-box 已安装"
-        read -p "是否重新安装? (y/n): " confirm
-        [[ "$confirm" != "y" ]] && exit 0
-    fi
-    
-    install_dependencies
-    
-    info "获取最新版本信息..."
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
-    [[ -z "$LATEST_VERSION" ]] && error "无法获取最新版本信息"
-    
-    info "最新版本: v${LATEST_VERSION}"
-    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
-    
-    info "下载 sing-box..."
-    TEMP_DIR=$(mktemp -d)
-    if ! wget -q --show-progress "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
-        error "sing-box 下载失败"
-    fi
-    
-    tar -xzf "${TEMP_DIR}/sing-box.tar.gz" -C "$TEMP_DIR"
-    BINARY_FILE=$(find "$TEMP_DIR" -name "sing-box" -type f)
-    [[ -z "$BINARY_FILE" ]] && error "未找到二进制文件"
-    
-    cp "$BINARY_FILE" "$SING_BOX_BIN"
-    chmod +x "$SING_BOX_BIN"
-    rm -rf "$TEMP_DIR"
-    
-    mkdir -p /etc/sing-box
-    mkdir -p "$SING_BOX_CONF_DIR"
+# 生成基础配置文件 (根据是否开启 IPv6 决定模板)
+generate_base_config() {
+    local enable_ipv6=$1
 
-    # 注意：新版不再手动下载 .db 文件，改为在 config.json 中定义 remote rule-set
-    
-    # === [修改] 配置文件：使用 rule_set 格式 ===
-    info "生成分流配置文件 (Rule Set 模式)..."
-    cat > "$SING_BOX_CONFIG" << 'EOF'
+    if [[ "$enable_ipv6" == "true" ]]; then
+        # 启用 IPv6 分流的配置
+        cat > "$SING_BOX_CONFIG" << 'EOF'
 {
   "log": {
     "level": "info",
@@ -199,6 +162,82 @@ install_singbox() {
   }
 }
 EOF
+    else
+        # 纯 IPv4 / 无分流配置
+        cat > "$SING_BOX_CONFIG" << 'EOF'
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ]
+  }
+}
+EOF
+    fi
+}
+
+# 安装sing-box
+install_singbox() {
+    clear
+    echo "=========================================="
+    echo "   sing-box 安装程序 (v2.3 完整版)"
+    echo "=========================================="
+    echo ""
+    
+    check_root
+    check_arch
+    
+    if [[ -f "$SING_BOX_BIN" ]]; then
+        warn "sing-box 已安装"
+        read -p "是否重新安装? (y/n): " confirm
+        [[ "$confirm" != "y" ]] && exit 0
+    fi
+    
+    install_dependencies
+    
+    # 自动探测 IPv6
+    check_ipv6
+    
+    info "获取最新版本信息..."
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
+    [[ -z "$LATEST_VERSION" ]] && error "无法获取最新版本信息"
+    
+    info "最新版本: v${LATEST_VERSION}"
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
+    
+    info "下载 sing-box..."
+    TEMP_DIR=$(mktemp -d)
+    if ! wget -q --show-progress "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
+        error "sing-box 下载失败"
+    fi
+    
+    tar -xzf "${TEMP_DIR}/sing-box.tar.gz" -C "$TEMP_DIR"
+    BINARY_FILE=$(find "$TEMP_DIR" -name "sing-box" -type f)
+    [[ -z "$BINARY_FILE" ]] && error "未找到二进制文件"
+    
+    cp "$BINARY_FILE" "$SING_BOX_BIN"
+    chmod +x "$SING_BOX_BIN"
+    rm -rf "$TEMP_DIR"
+    
+    mkdir -p /etc/sing-box
+    mkdir -p "$SING_BOX_CONF_DIR"
+
+    # 根据探测结果生成配置
+    generate_base_config "$HAS_IPV6"
     
     cat > "$SING_BOX_SERVICE" << 'EOF'
 [Unit]
@@ -231,7 +270,12 @@ EOF
     
     if systemctl is-active --quiet sing-box; then
         echo ""
-        success "sing-box 安装成功！(已配置 IPv4/v6 智能分流 - 新版 RuleSet)"
+        success "sing-box 安装成功！"
+        if [[ "$HAS_IPV6" == "true" ]]; then
+            info "智能分流状态: 已开启 (Google/Netflix 优先走 IPv6)"
+        else
+            info "智能分流状态: 未开启 (未检测到 IPv6)"
+        fi
         echo ""
     else
         error "sing-box 服务启动失败，请使用 sb log 查看日志"
@@ -308,12 +352,92 @@ restart_singbox() {
     fi
 }
 
+# 动态路由管理
+manage_route() {
+    local action=$1
+    local domain=$2
+    local target=$3
+
+    [[ ! -f "$SING_BOX_CONFIG" ]] && error "未找到配置文件"
+
+    case $action in
+        on)
+            info "正在开启 IPv4/v6 智能分流..."
+            # 备份现有 inbounds
+            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
+            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
+            generate_base_config "true"
+            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            restart_singbox
+            success "分流已开启！Google/Youtube/Netflix/TG 将优先走 IPv6。"
+            ;;
+        off)
+            info "正在关闭分流，切换至普通模式..."
+            cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
+            local inbounds=$(jq '.inbounds' "$SING_BOX_CONFIG")
+            generate_base_config "false"
+            jq --argjson inbounds "$inbounds" '.inbounds = $inbounds' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            restart_singbox
+            success "分流已关闭！所有流量将走默认路由。"
+            ;;
+        add)
+            [[ -z "$domain" || -z "$target" ]] && error "用法: sb route add <域名> <v4/v6>"
+            [[ "$target" != "v4" && "$target" != "v6" ]] && error "目标只能是 v4 或 v6"
+            
+            # 检查是否开启了分流功能
+            if ! jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
+                error "当前未开启分流功能，请先执行 'sb route on' 开启。"
+            fi
+
+            info "正在添加规则: 访问 $domain 将走 IPv$target"
+            local outbound_tag="direct-ipv4"
+            [[ "$target" == "v6" ]] && outbound_tag="direct-ipv6"
+
+            # 使用 jq 在 rules 数组最前面插入新规则
+            jq --arg domain "$domain" --arg out "$outbound_tag" \
+               '.route.rules = [{"domain": [$domain], "outbound": $out}] + .route.rules' \
+               "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            
+            restart_singbox
+            success "已添加临时分流规则: $domain -> IPv$target"
+            ;;
+        status)
+            info "当前路由分流状态："
+            if jq -e '.outbounds[] | select(.tag=="direct-ipv6")' "$SING_BOX_CONFIG" &>/dev/null; then
+                success "智能分流功能: [已开启]"
+                echo "默认走 IPv6 的服务: Google, Youtube, Netflix, Telegram"
+                echo "国内网站(CN): 走 IPv4"
+            else
+                warn "智能分流功能: [已关闭]"
+                echo "所有流量走系统默认路由。"
+            fi
+            ;;
+        *)
+            echo "=========================================="
+            echo "   路由分流管理帮助"
+            echo "=========================================="
+            echo "命令用法:"
+            echo "  sb route status           - 查看当前分流状态"
+            echo "  sb route on               - 开启智能分流 (需有 IPv6)"
+            echo "  sb route off              - 关闭分流 (单栈模式)"
+            echo "  sb route add <域名> <v4/v6> - 指定网站走 v4 或 v6"
+            echo ""
+            echo "示例:"
+            echo "  sb route add ip.sb v6     - 让 ip.sb 网站强制走 IPv6"
+            echo "  sb route add openai.com v4 - 让 ChatGPT 强制走 IPv4"
+            ;;
+    esac
+}
+
 # 添加VLESS-REALITY配置
 add_vless_reality() {
     clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   添加 VLESS-REALITY 配置"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   添加 VLESS-REALITY 配置"
+    echo "=========================================="
     echo ""
     
     read -p "端口 (默认随机): " PORT
@@ -374,14 +498,14 @@ EOF
     echo ""
     success "VLESS-REALITY 添加成功！"
     echo ""
-    echo -e "${YELLOW}📱 完整链接：${NC}"
+    echo "📱 完整链接："
     echo ""
-    echo -e "${CYAN}${VLESS_LINK}${NC}"
+    echo "${VLESS_LINK}"
     echo ""
-    echo -e "${YELLOW}配置详情：${NC}"
-    echo -e "  目标服务器: ${GREEN}${DEST_SERVER}${NC}"
-    echo -e "  目标端口: ${GREEN}${DEST_PORT}${NC}"
-    echo -e "  SNI: ${GREEN}${SNI}${NC}"
+    echo "配置详情："
+    echo "  目标服务器: ${DEST_SERVER}"
+    echo "  目标端口: ${DEST_PORT}"
+    echo "  SNI: ${SNI}"
     echo ""
     read -p "按回车继续..." dummy
 }
@@ -389,9 +513,9 @@ EOF
 # 添加HTTP代理
 add_http_proxy() {
     clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   添加 HTTP 代理"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   添加 HTTP 代理"
+    echo "=========================================="
     echo ""
     
     read -p "端口 (默认3128): " PORT
@@ -426,9 +550,9 @@ EOF
     echo ""
     success "HTTP 代理添加成功！"
     echo ""
-    echo -e "${YELLOW}🌐 完整地址：${NC}"
+    echo "🌐 完整地址："
     echo ""
-    echo -e "${CYAN}http://${USER}:${PASS}@${SERVER_IP}:${PORT}${NC}"
+    echo "http://${USER}:${PASS}@${SERVER_IP}:${PORT}"
     echo ""
     read -p "按回车继续..." dummy
 }
@@ -436,9 +560,9 @@ EOF
 # 添加SOCKS5代理
 add_socks5_proxy() {
     clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   添加 SOCKS5 代理"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   添加 SOCKS5 代理"
+    echo "=========================================="
     echo ""
     
     read -p "端口 (默认1080): " PORT
@@ -486,23 +610,23 @@ EOF
     echo ""
     success "SOCKS5 添加成功！"
     echo ""
-    echo -e "${YELLOW}🔌 完整地址：${NC}"
+    echo "🔌 完整地址："
     echo ""
     if [[ "$AUTH" == "y" ]]; then
-        echo -e "${CYAN}socks5://${USER}:${PASS}@${SERVER_IP}:${PORT}${NC}"
+        echo "socks5://${USER}:${PASS}@${SERVER_IP}:${PORT}"
     else
-        echo -e "${CYAN}socks5://${SERVER_IP}:${PORT}${NC}"
+        echo "socks5://${SERVER_IP}:${PORT}"
     fi
     echo ""
     read -p "按回车继续..." dummy
 }
 
-# 列出配置（交互式）
+# 列出配置（交互式，保持了原有的完整功能）
 list_configs() {
     clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   配置列表"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   配置列表"
+    echo "=========================================="
     echo ""
     
     [[ ! -f "$SING_BOX_CONFIG" ]] && { warn "配置文件不存在"; return; }
@@ -524,12 +648,12 @@ list_configs() {
         ports+=("$port")
     done <<< "$inbounds"
     
-    echo -e "${CYAN}序号  类型          端口      标签${NC}"
+    echo "序号  类型          端口      标签"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     for i in "${!tags[@]}"; do
         local num=$((i + 1))
-        printf "${GREEN}%-4s${NC}  ${YELLOW}%-12s${NC}  ${MAGENTA}%-8s${NC}  %s\n" "$num" "${types[$i]}" "${ports[$i]}" "${tags[$i]}"
+        printf "%-4s  %-12s  %-8s  %s\n" "$num" "${types[$i]}" "${ports[$i]}" "${tags[$i]}"
     done
     
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -549,15 +673,15 @@ list_configs() {
     show_config_info "${tags[$index]}"
 }
 
-# 显示配置详情
+# 显示配置详情 (原封不动还原)
 show_config_info() {
     local tag=$1
     [[ -z "$tag" ]] && error "请指定配置标签"
     
     clear
-    echo -e "${GREEN}=========================================="
-    echo -e "   配置详情"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   配置详情"
+    echo "=========================================="
     echo ""
     
     local config=$(jq -r ".inbounds[] | select(.tag == \"$tag\")" "$SING_BOX_CONFIG" 2>/dev/null)
@@ -567,12 +691,12 @@ show_config_info() {
     local port=$(echo "$config" | jq -r '.listen_port')
     SERVER_IP=$(get_server_ip)
     
-    echo -e "${CYAN}标签:${NC} ${YELLOW}$tag${NC}"
-    echo -e "${CYAN}类型:${NC} ${YELLOW}$type${NC}"
-    echo -e "${CYAN}端口:${NC} ${YELLOW}$port${NC}"
-    echo -e "${CYAN}服务器:${NC} ${YELLOW}$SERVER_IP${NC}"
+    echo "标签: $tag"
+    echo "类型: $type"
+    echo "端口: $port"
+    echo "服务器: $SERVER_IP"
     echo ""
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
     if [[ "$type" == "vless" ]]; then
@@ -590,9 +714,9 @@ show_config_info() {
         if [[ -n "$public_key" && "$flow" == "xtls-rprx-vision" ]]; then
             local vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-${port}"
             
-            echo -e "${YELLOW}📱 VLESS-REALITY 链接：${NC}"
+            echo "📱 VLESS-REALITY 链接："
             echo ""
-            echo -e "${CYAN}${vless_link}${NC}"
+            echo "${vless_link}"
             echo ""
         fi
         
@@ -600,21 +724,21 @@ show_config_info() {
         local username=$(echo "$config" | jq -r '.users[0].username')
         local password=$(echo "$config" | jq -r '.users[0].password')
         
-        echo -e "${YELLOW}🌐 HTTP 代理地址：${NC}"
+        echo "🌐 HTTP 代理地址："
         echo ""
-        echo -e "${CYAN}http://${username}:${password}@${SERVER_IP}:${port}${NC}"
+        echo "http://${username}:${password}@${SERVER_IP}:${port}"
         echo ""
         
     elif [[ "$type" == "socks" ]]; then
         local username=$(echo "$config" | jq -r '.users[0].username // ""')
         local password=$(echo "$config" | jq -r '.users[0].password // ""')
         
-        echo -e "${YELLOW}🔌 SOCKS5 代理地址：${NC}"
+        echo "🔌 SOCKS5 代理地址："
         echo ""
         if [[ -n "$username" ]]; then
-            echo -e "${CYAN}socks5://${username}:${password}@${SERVER_IP}:${port}${NC}"
+            echo "socks5://${username}:${password}@${SERVER_IP}:${port}"
         else
-            echo -e "${CYAN}socks5://${SERVER_IP}:${port}${NC}"
+            echo "socks5://${SERVER_IP}:${port}"
         fi
         echo ""
     fi
@@ -624,7 +748,7 @@ show_config_info() {
     list_configs
 }
 
-# 删除配置
+# 删除配置 (原封不动还原)
 delete_config() {
     local tag=$1
     
@@ -655,12 +779,12 @@ delete_config() {
     success "配置已删除: $tag"
 }
 
-# 卸载sing-box
+# 卸载sing-box (原封不动还原)
 uninstall_singbox() {
     clear
-    echo -e "${RED}=========================================="
-    echo -e "   卸载 sing-box"
-    echo -e "==========================================${NC}"
+    echo "=========================================="
+    echo "   卸载 sing-box"
+    echo "=========================================="
     echo ""
     
     warn "此操作将完全卸载 sing-box 并删除所有配置！"
@@ -703,40 +827,41 @@ uninstall_singbox() {
 # 帮助信息
 show_help() {
     cat << EOF
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-${GREEN}      sing-box 管理脚本 v2.2${NC}
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      sing-box 管理脚本 v2.3
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-${YELLOW}📦 安装与卸载:${NC}
-  ${GREEN}sb install${NC}          安装 sing-box (修复规则集)
-  ${GREEN}sb uninstall${NC}        卸载 sing-box
+📦 安装与卸载:
+  sb install          安装 sing-box (含IPv6探测)
+  sb uninstall        卸载 sing-box
 
-${YELLOW}📋 配置管理:${NC}
-  ${GREEN}sb list${NC}             列出配置（交互式）
-  ${GREEN}sb add vless${NC}        添加 VLESS-REALITY
-  ${GREEN}sb add http${NC}         添加 HTTP 代理
-  ${GREEN}sb add socks${NC}        添加 SOCKS5 代理
-  ${GREEN}sb info <tag>${NC}       显示配置详情
-  ${GREEN}sb delete <tag>${NC}     删除配置
+📋 节点配置管理:
+  sb list             列出配置（交互式，可查看详情）
+  sb add vless        添加 VLESS-REALITY
+  sb add http         添加 HTTP 代理
+  sb add socks        添加 SOCKS5 代理
+  sb info <tag>       显示配置详情
+  sb delete <tag>     删除配置
 
-${YELLOW}🔧 服务管理:${NC}
-  ${GREEN}sb restart${NC}          重启服务
-  ${GREEN}sb status${NC}           查看状态
-  ${GREEN}sb log${NC}              查看日志
+🌐 路由分流管理 (新):
+  sb route status     查看分流状态
+  sb route on         开启智能分流
+  sb route off        关闭分流
+  sb route add <域名> <v4/v6>  指定域名走 v4 或 v6
 
-${YELLOW}💡 分流策略 (基于 Remote RuleSet):${NC}
-  • Google/Youtube/Netflix/TG -> IPv6 (直连)
-  • CN (国内域名/IP)          -> IPv4 (直连)
-  • 其他默认                  -> 默认路由
+🔧 服务管理:
+  sb restart          重启服务
+  sb status           查看状态
+  sb log              查看日志
 
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
 }
 
 show_log() {
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}   实时日志 (Ctrl+C 退出)${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "   实时日志 (Ctrl+C 退出)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     journalctl -u sing-box -f --no-pager
 }
@@ -749,6 +874,7 @@ main() {
     case ${1,,} in
         install) install_singbox ;;
         uninstall) uninstall_singbox ;;
+        route) manage_route "$2" "$3" "$4" ;;
         list|ls) list_configs ;;
         add)
             case ${2,,} in
