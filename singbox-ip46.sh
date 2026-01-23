@@ -474,6 +474,10 @@ add_vless_reality() {
   "tag": "vless-reality-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -539,7 +543,10 @@ add_http_proxy() {
   "tag": "http-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
@@ -591,7 +598,10 @@ add_socks5_proxy() {
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
@@ -603,7 +613,10 @@ EOF
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
+  "sniff": {
+    "enabled": true,
+    "override_destination": true
+  },
   "sniff_override_destination": true
 }
 EOF
