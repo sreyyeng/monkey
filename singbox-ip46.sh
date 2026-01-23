@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# sing-box 独立管理脚本 v2.4 (终极修复完整版)
+# sing-box 独立管理脚本 v2.5 (最终完美版)
 # 适配: Sing-box 1.9+ (Rule Set 格式)
 # 特性: 纯净无色 / IPv6 自动探测 / 动态路由管理 / 完整增删改查
-# 核心修正: [新增] 流量嗅探(Sniff)、[新增] DNS解析模块、[新增] WARP网卡自动探测
+# 核心修正: 修复最新版 Sing-box 废弃 sniff_override_destination 导致的语法错误
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -71,7 +71,7 @@ install_dependencies() {
     fi
 }
 
-# === 核心修正区：生成包含 DNS 模块和 auto_detect_interface 的配置 ===
+# 生成包含 DNS 模块和 auto_detect_interface 的配置
 generate_base_config() {
     local enable_ipv6=$1
     
@@ -210,7 +210,7 @@ EOF
 install_singbox() {
     clear
     echo "=========================================="
-    echo "   sing-box 安装程序 (v2.4 终极完整版)"
+    echo "   sing-box 安装程序 (v2.5 最终完美版)"
     echo "=========================================="
     echo ""
     
@@ -436,7 +436,6 @@ manage_route() {
     esac
 }
 
-# === 核心修正区：所有入站必须强制开启 sniff 流量嗅探 ===
 
 # 添加VLESS-REALITY配置
 add_vless_reality() {
@@ -468,6 +467,7 @@ add_vless_reality() {
     SHORT_ID=$(generate_short_id)
     
     CONF_FILE="${SING_BOX_CONF_DIR}/vless-reality-${PORT}.json"
+    # [修复]: 移除了会导致语法错误的 sniff_override_destination，仅保留 sniff
     cat > "$CONF_FILE" << EOF
 {
   "type": "vless",
@@ -475,7 +475,6 @@ add_vless_reality() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"uuid": "${UUID}", "flow": "xtls-rprx-vision"}],
   "tls": {
     "enabled": true,
@@ -504,7 +503,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${PORT}"
     echo ""
-    success "VLESS-REALITY 添加成功！(已强制开启流量嗅探)"
+    success "VLESS-REALITY 添加成功！(已完美适配嗅探)"
     echo ""
     echo "📱 完整链接："
     echo ""
@@ -534,7 +533,7 @@ add_http_proxy() {
     fi
     
     CONF_FILE="${SING_BOX_CONF_DIR}/http-${PORT}.json"
-    
+    # [修复]: 移除 sniff_override_destination
     cat > "$CONF_FILE" << EOF
 {
   "type": "http",
@@ -542,7 +541,6 @@ add_http_proxy() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -553,7 +551,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "HTTP 代理添加成功！(已强制开启流量嗅探)"
+    success "HTTP 代理添加成功！"
     echo ""
     echo "🌐 完整地址："
     echo ""
@@ -577,6 +575,7 @@ add_socks5_proxy() {
     
     CONF_FILE="${SING_BOX_CONF_DIR}/socks-${PORT}.json"
     
+    # [修复]: 移除 sniff_override_destination
     if [[ "$AUTH" == "y" ]]; then
         read -p "用户名 (默认socksuser): " USER
         [[ -z "$USER" ]] && USER="socksuser"
@@ -594,7 +593,6 @@ add_socks5_proxy() {
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
   "sniff": true,
-  "sniff_override_destination": true,
   "users": [{"username": "${USER}", "password": "${PASS}"}]
 }
 EOF
@@ -605,8 +603,7 @@ EOF
   "tag": "socks-${PORT}",
   "listen": "0.0.0.0",
   "listen_port": ${PORT},
-  "sniff": true,
-  "sniff_override_destination": true
+  "sniff": true
 }
 EOF
     fi
@@ -617,7 +614,7 @@ EOF
     SERVER_IP=$(get_server_ip)
     
     echo ""
-    success "SOCKS5 添加成功！(已强制开启流量嗅探)"
+    success "SOCKS5 添加成功！"
     echo ""
     echo "🔌 完整地址："
     echo ""
@@ -837,7 +834,7 @@ uninstall_singbox() {
 show_help() {
     cat << EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   sing-box 管理脚本 v2.4 (终极版)
+   sing-box 管理脚本 v2.5 (完美修复版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📦 安装与卸载:
