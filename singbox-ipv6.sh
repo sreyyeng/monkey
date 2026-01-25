@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# sing-box 双栈管理脚本 v3.1 (无色纯净/完整版)
+# sing-box 双栈管理脚本 v3.2 (无色纯净/官方直连下载版)
 # 特性: 
-# 1. 移除所有颜色代码，兼容所有终端
-# 2. 彻底移除 HTTP 代理，精简为 VLESS 和 SOCKS5
-# 3. 新增网络出口模式选择（IPv4专用 / IPv6专用 / 双栈自动）
-# 4. 保留完整的列表、详情、删除、卸载和日志管理功能
+# 1. 恢复官方 GitHub 直连下载，解决镜像失效问题
+# 2. 移除所有颜色代码，兼容所有终端
+# 3. 彻底移除 HTTP 代理，精简为 VLESS 和 SOCKS5
+# 4. 新增网络出口模式选择（IPv4专用 / IPv6专用 / 双栈自动）
+# 5. 保留完整的列表、详情、删除、卸载和日志管理功能
 
 # 配置路径
 SING_BOX_BIN="/usr/local/bin/sing-box"
@@ -34,7 +35,7 @@ auto_fix_sb_command() {
             warn "检测到 sb 命令缺失，正在自动修复..."
             cp "$SCRIPT_PATH" "$SB_SCRIPT" 2>/dev/null && chmod +x "$SB_SCRIPT"
             if [[ -f "$SB_SCRIPT" ]]; then
-                success "sb 命令已修复！"
+                success "sb 命令已修复！现在可以使用 'sb' 命令了"
                 echo ""
             fi
         fi
@@ -78,7 +79,7 @@ get_server_ipv6() {
     echo "[$ip]"
 }
 
-# 安装sing-box核心
+# 安装sing-box核心 (核心修改部分：使用原版官方直连)
 install_singbox() {
     clear
     echo "=========================================="
@@ -98,24 +99,23 @@ install_singbox() {
     install_dependencies
     
     info "获取最新版本信息..."
-    LATEST_VERSION=$(curl -s -6 "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
+    # 移除 -6 参数，恢复正常双栈请求
+    LATEST_VERSION=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.tag_name' | sed 's/v//')
+    
     if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
-        LATEST_VERSION="1.11.4"
-        warn "API 连接失败，使用默认版本: v${LATEST_VERSION}"
-    else
-        info "最新版本: v${LATEST_VERSION}"
+        error "无法获取最新版本信息，请检查网络"
     fi
     
-    FILENAME="sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
-    ORIGIN_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/${FILENAME}"
-    MIRROR_URL="https://ghp.ci/${ORIGIN_URL}"
+    info "最新版本: v${LATEST_VERSION}"
     
-    info "正在下载 (使用高速镜像)..."
+    # 恢复官方 GitHub 直连下载
+    DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
+    
+    info "下载 sing-box..."
     TEMP_DIR=$(mktemp -d)
     
-    if ! wget -q --show-progress "$MIRROR_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
-        echo ""
-        error "镜像下载失败！请检查 VPS 网络连接"
+    if ! wget -q --show-progress "$DOWNLOAD_URL" -O "${TEMP_DIR}/sing-box.tar.gz"; then
+        error "下载失败"
     fi
     
     info "安装 sing-box..."
@@ -185,10 +185,14 @@ EOF
     systemctl enable sing-box &>/dev/null
     systemctl start sing-box
     
+    # 创建 sb 快捷命令
     SCRIPT_PATH="$(readlink -f "$0")"
     if [[ -f "$SCRIPT_PATH" ]]; then
         cp "$SCRIPT_PATH" "$SB_SCRIPT"
         chmod +x "$SB_SCRIPT"
+    else
+        warn "无法自动创建 sb 命令"
+        echo "请手动运行: ln -sf $(pwd)/$(basename "$0") /usr/local/bin/sb"
     fi
     
     if systemctl is-active --quiet sing-box; then
@@ -199,6 +203,7 @@ EOF
         info "现在可以使用以下命令:"
         echo "  sb add vless    - 添加 VLESS-REALITY"
         echo "  sb add socks    - 添加 SOCKS5 代理"
+        echo "  sb list         - 查看配置"
         echo ""
     else
         error "sing-box 服务启动失败"
@@ -508,7 +513,7 @@ list_configs() {
     show_config_info "${tags[$index]}"
 }
 
-# 显示配置详情 (完整恢复版)
+# 显示配置详情
 show_config_info() {
     local tag=$1
     [[ -z "$tag" ]] && error "请指定配置标签"
@@ -616,7 +621,7 @@ delete_config() {
     success "配置已删除: $tag"
 }
 
-# 卸载sing-box (完整恢复版)
+# 卸载sing-box
 uninstall_singbox() {
     clear
     echo "=========================================="
