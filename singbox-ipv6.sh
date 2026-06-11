@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# sing-box 双栈管理脚本 v3.3
-# 修复: VLESS inbound JSON 构造改用 jq 拼接，彻底避免 heredoc 变量展开导致的语法错误
-# 修复: public_key 只写入 conf 备份文件，不混入主配置 inbound
-# 更新: 适配 sing-box v1.13.x 最新稳定版
+# sing-box 双栈管理脚本 v3.4
+# 修复: outbound 改用 inet4/inet6_bind_address 控制出口，完全兼容 v1.12+/v1.13+
 
 SING_BOX_BIN="/usr/local/bin/sing-box"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
@@ -91,13 +89,11 @@ install_singbox() {
         | jq -r '.tag_name' | sed 's/v//')
 
     if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
-        # 备用：写死已知最新稳定版
-        LATEST_VERSION="1.13.12"
+        LATEST_VERSION="1.13.13"
         warn "无法动态获取版本，使用内置版本: v${LATEST_VERSION}"
     fi
 
     info "最新版本: v${LATEST_VERSION}"
-
     DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/v${LATEST_VERSION}/sing-box-${LATEST_VERSION}-linux-${ARCH}.tar.gz"
     info "下载地址: $DOWNLOAD_URL"
 
@@ -110,7 +106,6 @@ install_singbox() {
     info "安装 sing-box..."
     tar -xzf "${TEMP_DIR}/sing-box.tar.gz" -C "$TEMP_DIR"
     BINARY_FILE=$(find "$TEMP_DIR" -name "sing-box" -type f | head -1)
-
     if [[ -z "$BINARY_FILE" ]]; then
         rm -rf "$TEMP_DIR"
         error "未找到 sing-box 二进制文件"
@@ -122,7 +117,7 @@ install_singbox() {
 
     mkdir -p /etc/sing-box "$SING_BOX_CONF_DIR"
 
-    # 初始化基础配置（三个 direct 出站）
+    # 基础配置：使用 inet4/inet6_bind_address 控制出口，兼容 v1.12+
     cat > "$SING_BOX_CONFIG" << 'BASECFG'
 {
   "log": {
@@ -133,18 +128,17 @@ install_singbox() {
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct",
-      "domain_strategy": "prefer_ipv4"
+      "tag": "direct"
     },
     {
       "type": "direct",
       "tag": "direct-v4",
-      "domain_strategy": "ipv4_only"
+      "inet4_bind_address": "0.0.0.0"
     },
     {
       "type": "direct",
       "tag": "direct-v6",
-      "domain_strategy": "ipv6_only"
+      "inet6_bind_address": "::"
     }
   ],
   "route": {
@@ -178,8 +172,6 @@ SVCCFG
     if [[ -f "$SCRIPT_PATH" ]]; then
         cp "$SCRIPT_PATH" "$SB_SCRIPT"
         chmod +x "$SB_SCRIPT"
-    else
-        warn "无法自动创建 sb 命令，请手动: cp $0 /usr/local/bin/sb && chmod +x /usr/local/bin/sb"
     fi
 
     if systemctl is-active --quiet sing-box; then
@@ -191,11 +183,10 @@ SVCCFG
         echo "  sb list         - 查看配置"
         echo ""
     else
-        error "sing-box 服务启动失败，请检查: journalctl -u sing-box -n 30"
+        journalctl -u sing-box -n 20 --no-pager
+        error "sing-box 服务启动失败"
     fi
 }
-
-# ---------- 工具函数 ----------
 
 generate_uuid() {
     if [[ -f "$SING_BOX_BIN" ]]; then
@@ -227,24 +218,19 @@ generate_short_id() {
     openssl rand -hex 8
 }
 
-# 将 inbound JSON 对象追加到主配置，并可选追加路由规则
-# 参数: $1=inbound_json_string  $2=tag  $3=out_tag
 add_inbound_to_config() {
     local inbound_json="$1"
     local tag="$2"
     local out_tag="$3"
 
-    # 验证 JSON 合法性
     if ! echo "$inbound_json" | jq . >/dev/null 2>&1; then
-        error "构造的 inbound JSON 非法，请检查输入参数"
+        error "构造的 inbound JSON 非法"
     fi
 
-    # 追加 inbound
     jq --argjson ib "$inbound_json" '.inbounds += [$ib]' \
         "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp" \
         && mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
 
-    # 追加路由规则（非 direct 类出站才需要绑定）
     if [[ "$out_tag" != "direct" ]]; then
         jq --arg tag "$tag" --arg out "$out_tag" \
             '.route.rules += [{"inbound": [$tag], "outbound": $out}]' \
@@ -259,7 +245,7 @@ restart_singbox() {
     check_out=$("$SING_BOX_BIN" check -c "$SING_BOX_CONFIG" 2>&1)
     if [[ $? -ne 0 ]]; then
         echo "$check_out"
-        error "配置文件语法错误，已终止。上面是 sing-box 的错误详情。"
+        error "配置文件验证失败，已终止"
     fi
 
     info "重启 sing-box 服务..."
@@ -269,7 +255,8 @@ restart_singbox() {
     if systemctl is-active --quiet sing-box; then
         success "服务重启成功"
     else
-        error "服务启动失败，请查看: journalctl -u sing-box -n 30"
+        journalctl -u sing-box -n 20 --no-pager
+        error "服务启动失败"
     fi
 }
 
@@ -277,7 +264,7 @@ select_ip_type() {
     echo "请选择此节点的网络出口模式:"
     echo "  1) 仅 IPv4"
     echo "  2) 仅 IPv6"
-    echo "  3) IPv4+IPv6 自动优先 IPv4"
+    echo "  3) IPv4+IPv6 双栈（系统默认）"
     read -rp "请输入 [1/2/3]: " ip_choice
 
     case "$ip_choice" in
@@ -307,8 +294,6 @@ select_ip_type() {
             ;;
     esac
 }
-
-# ---------- 添加 VLESS-REALITY ----------
 
 add_vless_reality() {
     clear
@@ -348,7 +333,6 @@ add_vless_reality() {
     TAG="vless-${IP_TYPE}-${PORT}"
     CONF_FILE="${SING_BOX_CONF_DIR}/${TAG}.json"
 
-    # 用 jq 构造合法 inbound JSON，完全避免 heredoc 变量展开问题
     INBOUND_JSON=$(jq -n \
         --arg     tag         "$TAG" \
         --arg     listen      "$LISTEN_IP" \
@@ -380,16 +364,12 @@ add_vless_reality() {
           }
         }')
 
-    if [[ -z "$INBOUND_JSON" ]]; then
-        error "jq 构造 inbound JSON 失败"
-    fi
+    [[ -z "$INBOUND_JSON" ]] && error "jq 构造 inbound JSON 失败"
 
-    # 备份文件：含 public_key 供 show_config_info 使用
+    # 备份文件含 public_key，供 show_config_info 使用
     echo "$INBOUND_JSON" | jq --arg pk "$PUBLIC_KEY" '. + {"public_key": $pk}' > "$CONF_FILE"
 
-    # 写入主配置（不含 public_key）
     add_inbound_to_config "$INBOUND_JSON" "$TAG" "$OUT_TAG"
-
     restart_singbox
 
     VLESS_LINK="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-${IP_TYPE}-${PORT}"
@@ -403,8 +383,6 @@ add_vless_reality() {
     echo ""
     read -rp "按回车继续..." _
 }
-
-# ---------- 添加 SOCKS5 ----------
 
 add_socks5_proxy() {
     clear
@@ -427,37 +405,24 @@ add_socks5_proxy() {
     if [[ "$AUTH" == "y" ]]; then
         read -rp "用户名 (默认 socksuser): " USER
         [[ -z "$USER" ]] && USER="socksuser"
-
         read -rp "密码 (默认随机): " PASS
         if [[ -z "$PASS" ]]; then
             PASS=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 16 | head -n 1)
             info "随机密码: ${PASS}"
         fi
-
         INBOUND_JSON=$(jq -n \
             --arg     tag    "$TAG" \
             --arg     listen "$LISTEN_IP" \
             --argjson port   "$PORT" \
             --arg     user   "$USER" \
             --arg     pass   "$PASS" \
-            '{
-              "type": "socks",
-              "tag": $tag,
-              "listen": $listen,
-              "listen_port": $port,
-              "users": [{"username": $user, "password": $pass}]
-            }')
+            '{"type":"socks","tag":$tag,"listen":$listen,"listen_port":$port,"users":[{"username":$user,"password":$pass}]}')
     else
         INBOUND_JSON=$(jq -n \
             --arg     tag    "$TAG" \
             --arg     listen "$LISTEN_IP" \
             --argjson port   "$PORT" \
-            '{
-              "type": "socks",
-              "tag": $tag,
-              "listen": $listen,
-              "listen_port": $port
-            }')
+            '{"type":"socks","tag":$tag,"listen":$listen,"listen_port":$port}')
     fi
 
     echo "$INBOUND_JSON" > "$CONF_FILE"
@@ -467,8 +432,6 @@ add_socks5_proxy() {
     echo ""
     success "SOCKS5 添加成功！(模式: ${IP_TYPE})"
     echo ""
-    echo "完整地址："
-    echo ""
     if [[ "$AUTH" == "y" ]]; then
         echo "socks5://${USER}:${PASS}@${SERVER_IP}:${PORT}"
     else
@@ -477,8 +440,6 @@ add_socks5_proxy() {
     echo ""
     read -rp "按回车继续..." _
 }
-
-# ---------- 列出 / 详情 ----------
 
 list_configs() {
     clear
@@ -497,17 +458,12 @@ list_configs() {
         return
     fi
 
-    declare -a tags=()
-    declare -a types=()
-    declare -a ports=()
-
+    declare -a tags=() types=() ports=()
     while IFS='|' read -r tag type port; do
-        tags+=("$tag")
-        types+=("$type")
-        ports+=("$port")
+        tags+=("$tag"); types+=("$type"); ports+=("$port")
     done <<< "$inbounds"
 
-    printf "%-4s  %-12s  %-8s  %s\n" "序号" "类型" "端口" "标签(含出口模式)"
+    printf "%-4s  %-12s  %-8s  %s\n" "序号" "类型" "端口" "标签"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     for i in "${!tags[@]}"; do
         printf "%-4s  %-12s  %-8s  %s\n" "$((i+1))" "${types[$i]}" "${ports[$i]}" "${tags[$i]}"
@@ -521,7 +477,6 @@ list_configs() {
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#tags[@]} )); then
         error "无效序号"
     fi
-
     show_config_info "${tags[$((choice-1))]}"
 }
 
@@ -553,30 +508,23 @@ show_config_info() {
         [[ -z "$display_ip" ]] && display_ip=$(get_server_ipv6)
     fi
 
-    echo "标签: $tag"
-    echo "类型: $type"
-    echo "端口: $port"
-    echo "IP:   $display_ip"
+    echo "标签: $tag  |  类型: $type  |  端口: $port  |  IP: $display_ip"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 
     if [[ "$type" == "vless" ]]; then
         local uuid flow sni short_id public_key
-        uuid=$(echo "$config" | jq -r '.users[0].uuid')
-        flow=$(echo "$config" | jq -r '.users[0].flow // "none"')
-        sni=$(echo "$config"  | jq -r '.tls.server_name // "N/A"')
+        uuid=$(echo "$config"     | jq -r '.users[0].uuid')
+        flow=$(echo "$config"     | jq -r '.users[0].flow // "none"')
+        sni=$(echo "$config"      | jq -r '.tls.server_name // "N/A"')
         short_id=$(echo "$config" | jq -r '.tls.reality.short_id[0] // ""')
-
-        local conf_file="${SING_BOX_CONF_DIR}/${tag}.json"
         public_key=""
-        [[ -f "$conf_file" ]] && public_key=$(jq -r '.public_key // ""' "$conf_file")
+        [[ -f "${SING_BOX_CONF_DIR}/${tag}.json" ]] && \
+            public_key=$(jq -r '.public_key // ""' "${SING_BOX_CONF_DIR}/${tag}.json")
 
-        if [[ -n "$public_key" && "$flow" == "xtls-rprx-vision" ]]; then
-            local vless_link="vless://${uuid}@${display_ip}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-${port}"
-            echo "VLESS-REALITY 链接："
-            echo ""
-            echo "${vless_link}"
+        if [[ -n "$public_key" ]]; then
+            echo "vless://${uuid}@${display_ip}:${port}?encryption=none&flow=${flow}&security=reality&sni=${sni}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-${port}"
             echo ""
         fi
 
@@ -584,9 +532,6 @@ show_config_info() {
         local username password
         username=$(echo "$config" | jq -r '.users[0].username // ""')
         password=$(echo "$config" | jq -r '.users[0].password // ""')
-
-        echo "SOCKS5 代理地址："
-        echo ""
         if [[ -n "$username" ]]; then
             echo "socks5://${username}:${password}@${display_ip}:${port}"
         else
@@ -595,12 +540,9 @@ show_config_info() {
         echo ""
     fi
 
-    echo ""
     read -rp "按回车返回..." _
     list_configs
 }
-
-# ---------- 删除 ----------
 
 delete_config() {
     local tag="$1"
@@ -622,19 +564,14 @@ delete_config() {
     [[ "$confirm" != "y" ]] && { info "已取消"; exit 0; }
 
     cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.backup.$(date +%s)"
-
     jq "del(.inbounds[] | select(.tag == \"$tag\")) \
       | del(.route.rules[] | select(.inbound[]? == \"$tag\"))" \
         "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp" \
         && mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
-
     find "$SING_BOX_CONF_DIR" -name "*${tag}*.json" -delete 2>/dev/null
-
     restart_singbox
     success "配置已删除: $tag"
 }
-
-# ---------- 卸载 ----------
 
 uninstall_singbox() {
     clear
@@ -647,13 +584,10 @@ uninstall_singbox() {
     read -rp "确认卸载? 输入 'YES' 继续: " confirm
     [[ "$confirm" != "YES" ]] && { info "已取消"; exit 0; }
 
-    info "停止并禁用服务..."
     systemctl is-active  --quiet sing-box && systemctl stop    sing-box
     systemctl is-enabled --quiet sing-box && systemctl disable sing-box &>/dev/null
-
     [[ -f "$SING_BOX_SERVICE" ]] && rm -f "$SING_BOX_SERVICE"
     systemctl daemon-reload
-
     [[ -f "$SING_BOX_BIN" ]] && rm -f "$SING_BOX_BIN"
 
     if [[ -d "/etc/sing-box" ]]; then
@@ -668,13 +602,9 @@ uninstall_singbox() {
     fi
 
     [[ -f "$SB_SCRIPT" ]] && rm -f "$SB_SCRIPT"
-    [[ -d "/var/log/sing-box" ]] && rm -rf /var/log/sing-box
-
     echo ""
     success "sing-box 已完全卸载！"
 }
-
-# ---------- 日志 / 帮助 ----------
 
 show_log() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -686,34 +616,29 @@ show_log() {
 show_help() {
     cat << 'HELP'
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      sing-box 管理脚本 v3.3 (双栈版)
+      sing-box 管理脚本 v3.4 (双栈版)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 安装与卸载:
   sb install           安装 sing-box
   sb uninstall         卸载 sing-box
 
 配置管理:
-  sb list              列出配置（交互式）
   sb add vless         添加 VLESS-REALITY
   sb add socks         添加 SOCKS5 代理
-  sb info <tag>        显示配置详情
+  sb list              列出所有配置
+  sb info <tag>        显示配置详情及链接
   sb delete <tag>      删除配置
 
 服务管理:
   sb restart           重启服务
-  sb status            查看状态
-  sb log               查看日志
-
+  sb status            查看服务状态
+  sb log               实时日志
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HELP
 }
 
-# ---------- 主入口 ----------
-
 main() {
     auto_fix_sb_command "$1"
-
     case "${1,,}" in
         install)   install_singbox ;;
         uninstall) uninstall_singbox ;;
@@ -723,8 +648,7 @@ main() {
                 vless|reality) add_vless_reality ;;
                 socks|socks5)  add_socks5_proxy ;;
                 *) error "未知类型: $2  用法: sb add vless | sb add socks" ;;
-            esac
-            ;;
+            esac ;;
         info|show)     show_config_info "$2" ;;
         delete|del|rm) delete_config "$2" ;;
         restart)       restart_singbox ;;
